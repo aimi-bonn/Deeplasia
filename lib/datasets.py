@@ -22,6 +22,7 @@ class RsnaBoneAgeKaggle(Dataset):
         self,
         annotation_path,
         img_dir,
+        mask_dir=None,
         data_augmentation=None,
         bone_age_normalization=None,
         logger=None,
@@ -37,19 +38,20 @@ class RsnaBoneAgeKaggle(Dataset):
         :param annotation_path: path to annotation csv file
         :param img_dir: base dir where images are located
         :param logger: logger (if None, no logging)
-        :param epoch_size: artificial size of an epoch (if None or 0 native size)
+        :param epoch_size: artificial size of an epoch (if None or 0 native size original size)
         """
         anno_df = pd.read_csv(annotation_path)
         if logger:
             logger.info(f"Loading data from {annotation_path}")
-        self.ids, self.male, self.Y = self.load_bone_age_anno(anno_df)
-
-        assert len(self.ids) == len(self.male) == len(self.Y)
+        self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
         assert np.all(
             np.vectorize(lambda i: os.path.exists(os.path.join(img_dir, f"{i}.png")))(
                 self.ids
             )
         )  # check if all annotated images are really in the dir
+
+        self.mask_dir = mask_dir
+        self._remove_if_mask_missing()
 
         self.n_samples = (
             len(self.ids)
@@ -77,13 +79,14 @@ class RsnaBoneAgeKaggle(Dataset):
         if torch.is_tensor(index):
             index = index.tolist()
 
-        image, image_path = self.open_image(index)
+        image, image_path = self._open_image(index)
+        if self.mask_dir:
+            mask = self._open_mask(index)
+            image = cv2.bitwise_and(image, image, mask)  # mask the hand
+
         image = self.data_augmentation(image=image)["image"]
-        image = self.normalize_image(image)
-
+        image = self._normalize_image(image)
         male = torch.Tensor([self.male[index]])
-
-        mask = self.open_mask(index)
 
         y = self.Y[index]
         y = torch.Tensor([(y - self.mean_Y) / self.sd_Y])
@@ -94,9 +97,9 @@ class RsnaBoneAgeKaggle(Dataset):
     def __len__(self):
         return self.n_samples
 
-    def open_image(self, index: int) -> (np.ndarray, str):
+    def _open_image(self, index: int) -> (np.ndarray, str):
         img_path = os.path.join(self.img_dir, f"{self.ids[index]}.png")
-        image = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
         assert (
             np.sum(image) != 0
         ), f"image with index {index} is all black (sum is {np.sum(image)})"
@@ -105,9 +108,33 @@ class RsnaBoneAgeKaggle(Dataset):
         ), f"std of image with index {index} is close to zero ({np.std(image)})"
         return image, img_path
 
-    def open_mask(self, index) -> np.ndarray:
-        """search for corresponding mask"""
-        return None
+    def _remove_if_mask_missing(self) -> None:
+        if not self.mask_dir:
+            return
+        if not type(self.mask_dir) == list:
+            self.mask_dir = [self.mask_dir]
+        avail_masks = []
+        for d in self.mask_dir:
+            avail_masks.append(
+                np.vectorize(lambda i: os.path.exists(os.path.join(d, f"{i}.png")))(
+                    self.ids
+                )
+            )
+        avail_masks = np.array(avail_masks).max(axis=0)
+        self.ids = self.ids[np.where(avail_masks)]
+        self.male = self.male[np.where(avail_masks)]
+        self.Y = self.Y[np.where(avail_masks)]
+
+    def _open_mask(self, index) -> np.ndarray:
+        """
+        search for a corresponding mask
+        """
+        for d in np.random.permutation(self.mask_dir):
+            img_path = os.path.join(d, f"{self.ids[index]}.png")
+            if os.path.exists(img_path):
+                break
+        mask = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+        return mask
 
     def get_norm(self):
         return self.mean_Y, self.sd_Y
@@ -117,7 +144,7 @@ class RsnaBoneAgeKaggle(Dataset):
         return y * self.sd + self.mean
 
     @staticmethod
-    def normalize_image(img: torch.Tensor) -> torch.Tensor:
+    def _normalize_image(img: torch.Tensor) -> torch.Tensor:
         img = img.to(torch.float32)
         m = img.mean()
         sd = img.std()
@@ -166,14 +193,15 @@ class RsnaBoneAgeKaggle(Dataset):
             # tensor = preprocessing.normalize_image("zscore", tensor)
 
     @staticmethod
-    def load_bone_age_anno(anno_df):
+    def _load_bone_age_anno(anno_df):
         """Assumes that the cols contain ids, gender, and ground truth bone age, respectively"""
         ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int)
         male = anno_df.iloc[:, 1].to_numpy()
-        if male[0] is "M" or male[0] is "F":
+        if male[0] in ["M", "F"]:
             male = np.where(male == "M", 1, 0)
         male = male.astype(np.bool)
         y = anno_df.iloc[:, 2].to_numpy(dtype=np.float32)
+        assert len(ids) == len(male) == len(y)
         return ids, male, y
 
 
@@ -196,6 +224,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         batch_size=32,
         num_workers=4,
         data_dir=constants.path_to_rsna_dir,
+        mask_dir=None,
         epoch_size=2048,
     ):
         """
@@ -207,6 +236,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         :param batch_size: batch size
         :param num_workers: number of threads for data loading and preprocessing
         :param data_dir: parent dir containing the data (if None `../../data/annotated/rsna_bone_age/` is assumed) use a ramdisk or local storage for faster access speeds
+        :poram mask_dir: dir or list of dirs containing masks for the presented images. If multiple masks are avaible for any given image, the mask is chosen randomly.
         :param epoch_size: (virtual) size of an epoch. If None the true size is used.
         """
         super().__init__()
@@ -231,6 +261,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             data_augmentation=self.train_augment,
             bone_age_normalization=None,  # calculate renorm based on training set
             epoch_size=epoch_size,
+            mask_dir=mask_dir,
         )
         self.mean, self.sd = self.train.get_norm()
         self.validation = RsnaBoneAgeKaggle(
@@ -239,16 +270,18 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                 "annotation_bone_age_validation_data_set.csv",
             ),
             os.path.join(data_dir, "bone_age_validation_data_set"),
+            mask_dir=mask_dir,
             data_augmentation=self.valid_augment,
             bone_age_normalization=(self.mean, self.sd),
         )
         self.test = RsnaBoneAgeKaggle(
             os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
             os.path.join(data_dir, "bone_age_test_data_set"),
+            mask_dir=mask_dir,
             data_augmentation=self.test_augment,
             bone_age_normalization=(self.mean, self.sd),
         )
-        self._assert_data_integrity()
+        # self._assert_data_integrity()
 
     def train_dataloader(self):
         return DataLoader(

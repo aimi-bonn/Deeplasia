@@ -32,6 +32,7 @@ class ModelProto(pl.LightningModule):
         num_workers=4,
         epoch_size=2048,
         data_dir=None,
+        mask_dir=None,
         *args,
         **kwargs,
     ):
@@ -47,6 +48,7 @@ class ModelProto(pl.LightningModule):
             num_workers=num_workers,
             epoch_size=epoch_size,
             data_dir=data_dir,
+            mask_dir=mask_dir,
         )
         self.sd = self.data.sd  # used for correct MAD scaling
         self.lr = lr
@@ -267,7 +269,6 @@ class EfficientDbam(ModelProto):
         pretrained=False,
         act_type="mem_eff",
         base="efficientnet-b0",
-        data_dir=None,
         *args,
         **kwargs,
     ):
@@ -338,6 +339,7 @@ def add_model_args(parent_parser):
         default=None,
         help="path to dir containing the rsna bone age data and annotation",
     )
+    parser.add_argument("--mask_dirs", nargs="+", default=None)
     parser.add_argument("--n_input_channels", type=int, default=1)
     parser.add_argument("--pretrained", type=bool, default=False)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -361,6 +363,7 @@ def from_argparse(args):
         "epoch_size": args.epoch_size,
         "train_augment": train_augment,
         "data_dir": args.data_dir,
+        "mask_dir": args.mask_dirs,
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
