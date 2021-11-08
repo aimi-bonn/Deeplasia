@@ -276,7 +276,10 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         assert len(self.validation.ids) == 1425
         assert len(self.test.ids) == 200
 
+
 def add_data_augm_args(parent_parser):
+    parent_parser.add_argument("--input_width", type=int, default=512)
+    parent_parser.add_argument("--input_height", type=int, default=512)
     parser = parent_parser.add_argument_group("Data_Augmentation")
     parser.add_argument("--flip_p", type=float, default=0.5)
     parser.add_argument("--rotation_range", type=int, default=20)
@@ -298,7 +301,7 @@ def setup_augmentation(args):
                 p=1.0,
             ),
             A.augmentations.crops.transforms.RandomResizedCrop(
-                500, 500, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+                args.input_width, args.input_height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
             ),
             ToTensorV2(),
         ],

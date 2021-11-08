@@ -10,7 +10,6 @@ import torchvision.models
 import pytorch_lightning as pl
 from time import time
 import scipy
-from abc import abstractmethod
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
 from lib.effNet import EfficientNet
 
@@ -25,15 +24,18 @@ class ModelProto(pl.LightningModule):
 
     def __init__(
         self,
-        train_augment,
+        train_augment=None,
         valid_augment=None,
         test_augment=None,
+        lr=1e-3,
         batch_size=32,
-        num_workers=2,
+        num_workers=4,
         epoch_size=2048,
         data_dir=None,
+        *args,
+        **kwargs,
     ):
-        super(ModelProto, self).__init__()
+        super(ModelProto, self).__init__(*args, **kwargs)
         self.criterion = torch.nn.MSELoss()
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
@@ -47,10 +49,7 @@ class ModelProto(pl.LightningModule):
             data_dir=data_dir,
         )
         self.sd = self.data.sd  # used for correct MAD scaling
-
-    @abstractmethod
-    def forward(self, x, male):
-        pass
+        self.lr = lr
 
     def setup(self, stage):
         self.start_time = time()
@@ -69,7 +68,11 @@ class ModelProto(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(
-            self.parameters(), lr=1e-3, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.0
+            self.parameters(),
+            lr=self.lr,
+            betas=(0.9, 0.999),
+            eps=1e-08,
+            weight_decay=0.0,
         )
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -117,7 +120,6 @@ class ModelProto(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss, mad, yhat = self._shared_step(batch)
         self.log("val_loss", loss, on_epoch=True)
-
         return {
             "loss": loss,
             "mad": mad,
@@ -203,22 +205,12 @@ class InceptionDbam(ModelProto):
         n_channels=1,
         pretrained=False,
         backbone=None,
-        train_augment=None,
-        valid_augment=None,
-        test_augment=None,
-        batch_size=32,
-        num_workers=2,
-        epoch_size=2048,
-        data_dir=None,
+        *args,
+        **kwargs,
     ):
         super(InceptionDbam, self).__init__(
-            train_augment=train_augment,
-            valid_augment=valid_augment,
-            test_augment=test_augment,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            epoch_size=epoch_size,
-            data_dir=data_dir,
+            *args,
+            **kwargs,
         )
 
         if backbone is None:
@@ -273,26 +265,16 @@ class EfficientDbam(ModelProto):
         self,
         n_channels=1,
         pretrained=False,
-        train_augment=None,
-        valid_augment=None,
-        test_augment=None,
-        batch_size=32,
-        num_workers=2,
-        epoch_size=2048,
         act_type="mem_eff",
         base="efficientnet-b0",
         data_dir=None,
+        *args,
+        **kwargs,
     ):
         super(EfficientDbam, self).__init__(
-            train_augment=train_augment,
-            valid_augment=valid_augment,
-            test_augment=test_augment,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            epoch_size=epoch_size,
-            data_dir=data_dir,
+            *args,
+            **kwargs,
         )
-
         assert (
             base in EfficientNet.VALID_MODELS
         ), f"Given base model type ({base}) is invalid"
@@ -307,21 +289,12 @@ class EfficientDbam(ModelProto):
             self.base = EfficientNet.EfficientNet.from_name(
                 base, in_channels=n_channels
             )
-
-        ## Expected in size: [batch_size, 1280, 16, 16] = b0
-        # self.dim_reduction_conv = nn.Conv2d(in_channels=1280, out_channels=64, kernel_size=1)
-
         self.act = (
             EfficientNet.Swish()
             if act_type != "mem_eff"
             else EfficientNet.MemoryEfficientSwish()
         )
         self.dropout = nn.Dropout(p=0.2)
-
-        self.pool = nn.AvgPool2d(kernel_size=16, stride=16)
-        # Will be flattened afterwards to be of shape: B x 1280, rather than B x 1280 x 1 x 1
-        # The B x 32 Gender will afterwards be concatenated to the other features
-        # to be of shape B x 1312
         n_gender_dcs = 32
         self.fc_gender_in = nn.Linear(1, n_gender_dcs)
 
@@ -382,28 +355,27 @@ def from_argparse(args):
     train_augment = datasets.setup_augmentation(args)
     if dense != "dbam":
         raise NotImplementedError
+    proto_kwargs = {
+        "batch_size": args.batch_size,
+        "num_workers": args.num_workers,
+        "epoch_size": args.epoch_size,
+        "train_augment": train_augment,
+        "data_dir": args.data_dir,
+    }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
         return EfficientDbam(
             n_channels=args.n_input_channels,
             pretrained=args.pretrained,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            epoch_size=args.epoch_size,
             act_type="mem_eff",
             base=backbone,
-            train_augment=train_augment,
-            data_dir=args.data_dir,
+            **proto_kwargs,
         )
     elif backbone == "inceptionv3":
         return InceptionDbam(
             n_channels=args.n_input_channels,
             pretrained=args.pretrained,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            epoch_size=args.epoch_size,
-            train_augment=train_augment,
-            data_dir=args.data_dir,
+            **proto_kwargs,
         )
     else:
         raise NotImplementedError
