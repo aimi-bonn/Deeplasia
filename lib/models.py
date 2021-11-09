@@ -14,6 +14,8 @@ from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADER
 from lib.effNet import EfficientNet
 
 from lib import datasets
+import logging
+logger = logging.getLogger(__name__)
 
 
 class ModelProto(pl.LightningModule):

@@ -10,46 +10,160 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import os
+import sys
 import torch
 from torch import nn
+import albumentations
 
 import pandas as pd
 
 from lib import constants
 
+import logging
+
 # dir were to search for serialization obj, modified if needed
 pickle_obj_dir = constants.path_to_pickle_dir
 csv_df_dir = constants.path_to_csv_dir
 
+# source: https://stackoverflow.com/questions/7507825/where-is-a-complete-example-of-logging-config-dictconfig
+LOG_CONFIG = {
+    # Always 1. Schema versioning may be added in a future release of logging
+    "version": 1,
+    # "Name of formatter" : {Formatter Config Dict}
+    "formatters": {
+        # Formatter Name
+        "standard": {
+            # class is always "logging.Formatter"
+            "class": "logging.Formatter",
+            # Optional: logging output format
+            "format": "%(asctime)s\t%(levelname)s\t%(filename)s\t%(message)s",
+            # Optional: asctime format
+            "datefmt": "%d %b %y %H:%M:%S",
+        }
+    },
+    # Handlers use the formatter names declared above
+    "handlers": {
+        # Name of handler
+        "console": {
+            # The class of logger. A mixture of logging.config.dictConfig() and
+            # logger class-specific keyword arguments (kwargs) are passed in here.
+            "class": "logging.StreamHandler",
+            # This is the formatter name declared above
+            "formatter": "standard",
+            "level": "INFO",
+            # The default is stderr
+            # "stream": "ext://sys.stdout"
+        },
+        # Same as the StreamHandler example above, but with different  # not used
+        # handler-specific kwargs.
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "standard",
+            "level": "INFO",
+            "filename": os.getenv("LOG_FILE") if os.getenv("LOG_DIR") else "run.log",
+            "mode": "a",
+            "encoding": "utf-8",
+            "maxBytes": 500000,
+            "backupCount": 4,
+        },
+    },
+    # Loggers use the handler names declared above
+    "loggers": {
+        "__main__": {  # if __name__ == "__main__"
+            # Use a list even if one handler is used
+            "handlers": ["console", "file"],
+            "level": "INFO",
+            "propagate": True,
+        }
+    },
+    # Just a standalone kwarg for the root logger
+    "root": {
+        "level": "INFO",
+        "handlers": ["console", "file"],
+    },
+}
 
-def get_logger():
+
+import logging
+import sys
+
+
+def set_logger(level=""):
+    """ Function to set up the handle error logging.
+    logger (obj) = a logger object
+    logLevel (str) = level of information to print out, options are
+    {info, debug} [Default: info]
     """
-    create and setup logger
 
-    :return: logger
-    """
-    logger = logging.getLogger('lightning')
-    logger.setLevel(logging.DEBUG)
-    print(constants.path_to_log_dir)
-    log_file = f"{constants.path_to_log_dir}/run.log"
-    logging.basicConfig(
-        filename=log_file,
-        format="%(asctime)s: %(name)s - %(message)s",
-        datefmt="%m-%d %H:%M",
-        level=logging.INFO,
-        filemode="w",
-    )
-    console_handle = logging.StreamHandler()
-    console_handle.setLevel(logging.DEBUG)
+    # Starting a logger
+    logger = logging.getLogger()
+    error = logging.ERROR
 
-    formatter = logging.Formatter("%(asctime)s: %(message)s", datefmt="%m-%d %H:%M:%S")
-    console_handle.setFormatter(formatter)
-    logger.addHandler(console_handle)
+    # Determine log level
+    if level == 'debug':
+        _level = logging.DEBUG
+    else:
+        _level = logging.INFO
 
-    # work around for the font warning in server
-    logging.getLogger("matplotlib").setLevel(logging.ERROR)
+    # Set the level in logger
+    logger.setLevel(_level)
+
+    # Set the log format
+    log_fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+    # Set logger output to STDOUT and STDERR
+    log_handler = logging.StreamHandler(stream=sys.stdout)
+    err_handler = logging.StreamHandler(stream=sys.stderr)
+
+    # Set logging level for the different output handlers.
+    # ERRORs to STDERR, and everything else to STDOUT
+    log_handler.setLevel(_level)
+    err_handler.setLevel(error)
+
+    # Format the log handlers
+    log_handler.setFormatter(log_fmt)
+    err_handler.setFormatter(log_fmt)
+
+    # Add handler to the main logger
+    logger.addHandler(log_handler)
+    logger.addHandler(err_handler)
 
     return logger
+
+
+
+
+def change_log_output_dir(new_dir, name="run.log"):  # doesn't work for all logs
+    os.makedirs(new_dir, exist_ok=True)
+    new_fh = logging.FileHandler(os.path.join(new_dir, name), "a")
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    new_fh.setFormatter(formatter)
+
+    logger = logging.getLogger()  # root logger
+    for hdlr in logger.handlers[:]:  # remove all old handlers
+        logger.removeHandler(hdlr)
+    logger.addHandler(new_fh)  # set the new handler
+    logger.info(f"change dir to {new_dir}")
+
+
+def log_system_info(logger):
+    logger.info(f"Logs saved to {LOG_CONFIG['handlers']['file']['filename']}")
+    logger.info(f"Core count             = {os.cpu_count()}")
+    logger.info(f"Python version         = {sys.version}")
+    logger.info(f"Pytorch version        = {torch.__version__}")
+    logger.info(f"Albumentations version = {albumentations.__version__}")
+    if torch.cuda.is_available():
+        logger.info(f"CUDA version           = {torch.version.cuda}")
+        logger.info(f"CUDA count             = {torch.cuda.device_count()}")
+        logger.info(f"CUDA name              = {torch.cuda.get_device_name()}")
+
+
+def log_args(logger, args):
+    logger.info("bla2")
+    l = [f"{k} : {v}" for k, v in vars(args).items()]
+    logger.info("/n".join(l))
 
 
 def restore_df_from_csv(name, func, *args, **kwargs):
@@ -186,16 +300,14 @@ def plot_bone_age_examples(images, title="random images"):
             ax.axis("off")
     plt.suptitle(title)
     plt.show()
-    
-    
+
+
 def visualize_augmentations(images, aug_transform, n_examples=6):
-    plt.figure(figsize=(17,38))
+    plt.figure(figsize=(17, 38))
     for i, img in enumerate(images):
         for j in range(n_examples):
             if j == 0:
-                augmented = A.Compose([
-                    A.pytorch.ToTensorV2()
-                ])(image=img)
+                augmented = A.Compose([A.pytorch.ToTensorV2()])(image=img)
             else:
                 augmented = aug_transform(image=img)
             sample = augmented["image"]
@@ -230,6 +342,7 @@ class SwishImplementation(torch.autograd.Function):
         i = ctx.saved_tensors[0]
         sigmoid_i = torch.sigmoid(i)
         return grad_output * (sigmoid_i * (1 + i * (1 - sigmoid_i)))
+
 
 class MemoryEfficientSwish(nn.Module):
     def forward(self, x):
