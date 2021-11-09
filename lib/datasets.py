@@ -83,7 +83,6 @@ class RsnaBoneAgeKaggle(Dataset):
         if self.mask_dir:
             mask = self._open_mask(index)
             image = cv2.bitwise_and(image, image, mask)  # mask the hand
-
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
         male = torch.Tensor([self.male[index]])
@@ -318,7 +317,7 @@ def add_data_augm_args(parent_parser):
     parser.add_argument("--rotation_range", type=int, default=20)
     parser.add_argument("--relative_scale", type=float, default=0.2)
     parser.add_argument("--shear_percent", type=int, default=1)
-    parser.add_argument("--translate_percent", type=int, default=20)
+    parser.add_argument("--translate_percent", type=int, default=0.2)
     return parent_parser
 
 

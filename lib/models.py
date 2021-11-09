@@ -214,7 +214,7 @@ class InceptionDbam(ModelProto):
             *args,
             **kwargs,
         )
-
+        self.save_hyperparameters()
         if backbone is None:
             feature_extractor = torchvision.models.inception_v3(
                 pretrained=pretrained, aux_logits=False, init_weights=True
@@ -276,6 +276,7 @@ class EfficientDbam(ModelProto):
             *args,
             **kwargs,
         )
+        self.save_hyperparameters()
         assert (
             base in EfficientNet.VALID_MODELS
         ), f"Given base model type ({base}) is invalid"
