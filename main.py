@@ -1,12 +1,9 @@
 import logging, logging.config
 from lib.utils import LOG_CONFIG
-
 logging.config.dictConfig(LOG_CONFIG)
 
 import sys, pickle, os, yaml
-
 import pytorch_lightning as pl
-
 from argparse import ArgumentParser
 
 sys.path.append("..")
@@ -29,7 +26,7 @@ def main():
     logger.info(f"Command Line Args: {yaml.dump(vars(args))}")
 
     tb_logger = pl.loggers.tensorboard.TensorBoardLogger(
-        save_dir="logs/",
+        save_dir="output/",
         name=args.name,
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
@@ -51,7 +48,8 @@ def main():
     )
     trainer.fit(model)
     logger.info(f"===== Training finished ======")
-    logger.info(f"Training time : {(time() - model.start_time) / 60}")
+    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}s")
+
 
 if __name__ == "__main__":
     main()
