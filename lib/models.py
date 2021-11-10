@@ -15,6 +15,7 @@ from lib.effNet import EfficientNet
 
 from lib import datasets
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -93,39 +94,40 @@ class ModelProto(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
+                "monitor": "Loss/val_loss",
                 "interval": "epoch",
             },
         }
 
     def training_step(self, batch, batch_idx):
         loss, mad, yhat = self._shared_step(batch)
-        self.log("train_loss_step", loss, on_step=True, prog_bar=False, logger=True)
+        self.log(
+            "Loss/train_loss_step", loss, on_step=True, prog_bar=False, logger=True
+        )
         return {"loss": loss, "mad": mad, "n": batch["x"].shape[0]}
 
     def training_epoch_end(self, outputs):
         epoch_loss, epoch_mad = self._summarize_epoch(outputs)
         log_dict = {
-            "train_loss_epoch": epoch_loss,
-            "train_mad": epoch_mad,
-            "train_mad_months": epoch_mad * self.sd,
+            "Loss/train_loss_epoch": epoch_loss,
+            "Accuracy/train_mad": epoch_mad,
+            "Accuracy/train_mad_months": epoch_mad * self.sd,
         }
         wall_time = time() - self.start_time
         wall_time = round(wall_time / 60)
         self.logger.log_metrics(log_dict, step=self.current_epoch)
+        # self.logger.experiment.add_scalars(
+        #     "Loss/losses", {"train": epoch_loss}, global_step=self.current_epoch
+        # )
         self.logger.experiment.add_scalars(
-            "losses", {"train": epoch_loss}, global_step=self.current_epoch
-        )
-        self.logger.experiment.add_scalars(
-            "MAD_months", {"train": epoch_mad * self.sd}, global_step=self.current_epoch
-        )
-        self.logger.experiment.add_scalars(
-            "wall_time_min", {"train": wall_time}, global_step=self.current_epoch
+            "Accuracy/MAD_months",
+            {"train": epoch_mad * self.sd},
+            global_step=self.current_epoch,
         )
 
     def validation_step(self, batch, batch_idx):
         loss, mad, yhat = self._shared_step(batch)
-        self.log("val_loss", loss, on_epoch=True)
+        self.log("Loss/val_loss", loss, on_epoch=True)
         return {
             "loss": loss,
             "mad": mad,
@@ -138,18 +140,20 @@ class ModelProto(pl.LightningModule):
         epoch_loss, epoch_mad = self._summarize_epoch(outputs)
         slope, intercept = self.calculate_prediction_bias(outputs)
         log_dict = {
-            "val_loss_epoch": epoch_loss,
-            "val_mad": epoch_mad,
-            "val_mad_months": epoch_mad * self.sd,
-            "pred_bias_intercept": intercept,
-            "pred_bias_slope": slope,
+            "Loss/val_loss_epoch": epoch_loss,
+            "Acurracy/val_mad": epoch_mad,
+            "Acurracy/val_mad_months": epoch_mad * self.sd,
+            "Pred_bias/intercept": intercept,
+            "Pred_bias/slope": slope,
         }
         self.logger.log_metrics(log_dict, step=self.current_epoch)
+        # self.logger.experiment.add_scalars(
+        #     "losses", {"val": epoch_loss}, global_step=self.current_epoch
+        # )
         self.logger.experiment.add_scalars(
-            "losses", {"val": epoch_loss}, global_step=self.current_epoch
-        )
-        self.logger.experiment.add_scalars(
-            "MAD_months", {"val": epoch_mad * self.sd}, global_step=self.current_epoch
+            "Accuracy/MAD_months",
+            {"val": epoch_mad * self.sd},
+            global_step=self.current_epoch,
         )
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):

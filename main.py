@@ -1,5 +1,6 @@
 import logging, logging.config
 from lib.utils import LOG_CONFIG
+
 logging.config.dictConfig(LOG_CONFIG)
 
 import sys, pickle, os, yaml
