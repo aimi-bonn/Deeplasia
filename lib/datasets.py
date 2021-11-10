@@ -1,6 +1,7 @@
 """
 Module to manage datasets and loaders
 """
+import logging
 import os
 
 import cv2
@@ -16,8 +17,12 @@ from albumentations.pytorch import ToTensorV2
 
 from lib import preprocessing
 
+logger = logging.getLogger(__name__)
 
 class RsnaBoneAgeKaggle(Dataset):
+
+    DEFAUL_IMAGE_RESOLUTION = (512, 512)
+
     def __init__(
         self,
         annotation_path,
@@ -25,7 +30,6 @@ class RsnaBoneAgeKaggle(Dataset):
         mask_dir=None,
         data_augmentation=None,
         bone_age_normalization=None,
-        logger=None,
         epoch_size=None,
     ):
         """
@@ -37,13 +41,13 @@ class RsnaBoneAgeKaggle(Dataset):
             (if None calculated from the own dataset, can be retrieved by 'get_norm()' method)
         :param annotation_path: path to annotation csv file
         :param img_dir: base dir where images are located
-        :param logger: logger (if None, no logging)
         :param epoch_size: artificial size of an epoch (if None or 0 native size original size)
         """
         anno_df = pd.read_csv(annotation_path)
-        if logger:
-            logger.info(f"Loading data from {annotation_path}")
+        logger.info(f"Loading annotation data from {annotation_path}")
+        logger.info(f"Loading image data from {img_dir}")
         self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
+        self.img_dir = img_dir
         assert np.all(
             np.vectorize(lambda i: os.path.exists(os.path.join(img_dir, f"{i}.png")))(
                 self.ids
@@ -58,15 +62,16 @@ class RsnaBoneAgeKaggle(Dataset):
             if not epoch_size or epoch_size > len(self.ids)
             else epoch_size
         )
-        self.img_dir = img_dir
+        logger.info(f"(Virtual) Epoch size : {self.n_samples}")
 
         self.data_augmentation = (
             data_augmentation
             if data_augmentation
             else preprocessing.BoneAgeDataAugmentation(
-                augment=False, output_tensor_size=(500, 500)
+                augment=False, output_tensor_size=self.DEFAUL_IMAGE_RESOLUTION
             )
         )
+        logger.info(f"Augmentations used : {self.data_augmentation}")
 
         if not bone_age_normalization:
             self.mean_Y = np.mean(self.Y)
@@ -109,9 +114,12 @@ class RsnaBoneAgeKaggle(Dataset):
 
     def _remove_if_mask_missing(self) -> None:
         if not self.mask_dir:
+            logger.info("No masking - raw images used")
+            logger.info(f"Number of images : {len(self.ids)}")
             return
         if not type(self.mask_dir) == list:
             self.mask_dir = [self.mask_dir]
+        logger.info(f"Used masking dirs : {self.mask_dir}")
         avail_masks = []
         for d in self.mask_dir:
             avail_masks.append(
@@ -119,7 +127,9 @@ class RsnaBoneAgeKaggle(Dataset):
                     self.ids
                 )
             )
+            logger.info(f"Number of masks available at {d} : {sum(avail_masks)} / {len(self.ids)}")
         avail_masks = np.array(avail_masks).max(axis=0)
+        logger.info(f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.ids)}")
         self.ids = self.ids[np.where(avail_masks)]
         self.male = self.male[np.where(avail_masks)]
         self.Y = self.Y[np.where(avail_masks)]
@@ -208,7 +218,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
     NO_AUGMENT = A.Compose(
         [
             A.augmentations.crops.transforms.RandomResizedCrop(
-                500, 500, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+                512, 512, scale=(1.0, 1.0), ratio=(1.0, 1.0)
             ),
             A.pytorch.ToTensorV2(),
         ],
@@ -254,6 +264,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         if not data_dir:
             data_dir = constants.path_to_rsna_dir
 
+        logger.info(f"====== Setting up training data ======")
         self.train = RsnaBoneAgeKaggle(
             os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
             os.path.join(data_dir, "bone_age_training_data_set"),
@@ -263,6 +274,10 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             mask_dir=mask_dir,
         )
         self.mean, self.sd = self.train.get_norm()
+        logger.info(f"Parameters used for bone age normalization: mean = {self.mean} - sd = {self.sd}")
+        logger.info(f"====== ====== ====== ====== ====== ======")
+        logger.info(f"====== Setting up validation data ======")
+        logger.info(f"Setting up validation data")
         self.validation = RsnaBoneAgeKaggle(
             os.path.join(
                 data_dir,
@@ -273,6 +288,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             data_augmentation=self.valid_augment,
             bone_age_normalization=(self.mean, self.sd),
         )
+        logger.info(f"====== ====== ====== ====== ======")
+        logger.info(f"====== Setting up test data ======")
         self.test = RsnaBoneAgeKaggle(
             os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
             os.path.join(data_dir, "bone_age_test_data_set"),

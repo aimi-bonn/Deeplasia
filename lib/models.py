@@ -42,6 +42,7 @@ class ModelProto(pl.LightningModule):
         self.criterion = torch.nn.MSELoss()
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
+        logger.info(f"Setting up data from {data_dir}")
         self.data = datasets.RsnaBoneAgeDataModule(
             train_augment,
             valid_augment=valid_augment,
@@ -57,6 +58,7 @@ class ModelProto(pl.LightningModule):
 
     def setup(self, stage):
         self.start_time = time()
+        logger.info(f"start training at {self.start_time}")
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self.data.train_dataloader()
