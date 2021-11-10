@@ -1,5 +1,6 @@
 import logging, logging.config
 from lib.utils import LOG_CONFIG
+
 logging.config.dictConfig(LOG_CONFIG)
 
 import sys, pickle, os, yaml
@@ -27,8 +28,6 @@ def main():
 
     logger.info(f"Command Line Args: {yaml.dump(vars(args))}")
 
-    logger.info("bla")
-
     tb_logger = pl.loggers.tensorboard.TensorBoardLogger(
         save_dir="logs/",
         name=args.name,
@@ -36,13 +35,12 @@ def main():
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
     output_dir = tb_logger.log_dir + "/ckp/"  # use tb to define log dir
     ckp_callback = pl.callbacks.ModelCheckpoint(
-        monitor="val_loss",
+        monitor="Loss/val_loss",
         dirpath=output_dir,
         filename="{epoch:03d}-{val_loss:.4f}",
         save_top_k=3,
         mode="min",
     )
-    new_dir = tb_logger.log_dir
     callbacks = [lr_monitor, ckp_callback]
     model = from_argparse(args)
     trainer = pl.Trainer.from_argparse_args(
