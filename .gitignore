@@ -66,10 +66,12 @@ output/
 !annotations.csv
 
 # tmp files
-notebooks/playground/
+nb/playground/
+
 
 ## run log file
 *logs*
+run.log
 
 ##
 */lightning_logs/*
