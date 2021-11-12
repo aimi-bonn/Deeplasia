@@ -1,5 +1,6 @@
 import logging, logging.config
 from lib.utils import LOG_CONFIG
+
 logging.config.dictConfig(LOG_CONFIG)
 
 import sys, pickle, os, yaml
@@ -26,8 +27,7 @@ def main():
     logger.info(f"Command Line Args: {yaml.dump(vars(args))}")
 
     tb_logger = pl.loggers.tensorboard.TensorBoardLogger(
-        save_dir="output/",
-        name=args.name,
+        save_dir="output/", name=args.name, log_graph=True, default_hp_metric=False
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
     output_dir = tb_logger.log_dir + "/ckp/"  # use tb to define log dir
@@ -48,7 +48,17 @@ def main():
     )
     trainer.fit(model)
     logger.info(f"===== Training finished ======")
-    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}s")
+    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}min")
+
+    log_dict = {
+        "hp/val_mad_months": 5,
+        "hp/val_mad_months_reg": 2,
+        "hp/test_mad_months": 42,
+        "hp/test_mad_months_reg": 1.5,
+    }
+    model.logger.log_metrics(log_dict)
+
+    test_loop()
 
 
 if __name__ == "__main__":

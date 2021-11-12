@@ -1,9 +1,11 @@
 # Bone Age
 
-Now everything is integrated into [pytorch-lighntning](https://pytorch-lightning.readthedocs.io/en/latest/) which is basically a wrapper for pytorch code and fully compatible. Mainly, we are using the lightning Trainer instead of our own loop, so all the parameters for training (e.g. gpus, checkpoints files, etc.) are specified by the TRainer
+Now everything is integrated into [pytorch-lightning](https://pytorch-lightning.readthedocs.io/en/latest/) which is basically a wrapper for pytorch code and fully compatible. 
+Mainly, we are using the lightning Trainer instead of our own loop, so all the parameters for training (e.g. gpus, checkpoints files, etc.) are specified by the Trainer.
 
 ## Command line
-On the inside the trainer is called and the trainer arguments are parsed from the commandline. Hence, all args can be directly specified on the commandline upon calling the `main`. 
+On the inside the trainer is called and the trainer arguments are parsed from the commandline. 
+Hence, all args can be directly specified on the commandline upon calling the `main.py`. 
 
 Some useful args are
   * `precision` (e.g. 16 or 'bf16')
@@ -14,10 +16,10 @@ Some useful args are
   * `stochastic_wheight_avg`
   * `auto_select_gpus` use all gpus available, see [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#pytorch_lightning.trainer.Trainer.params.auto_select_gpus)
   
-A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api)
+A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
 ## Logging
-As pre-define the run will create a output `run.log` at the main dir. For real runs the log should be moved to `bone_age/output/{run_name}/run.log`. The workaround to archive this is setting and evironment variable called `LOG_DIR` before running the script.
+As pre-defined, the run will create an output `run.log` in the main dir. For real runs the log should be moved to `bone_age/output/{run_name}/run.log`. The workaround to archive this is setting and evironment variable called `LOG_DIR` before running the script.
 
 ## Code formatting
-Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.acc_interval 3 --epochs 20 --lr 1e-4`
+Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.

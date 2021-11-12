@@ -39,7 +39,7 @@ class ModelProto(pl.LightningModule):
         *args,
         **kwargs,
     ):
-        super(ModelProto, self).__init__(*args, **kwargs)
+        super(ModelProto, self).__init__()  # might want to forward args and kwargs here
         self.criterion = torch.nn.MSELoss()
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
@@ -56,6 +56,7 @@ class ModelProto(pl.LightningModule):
         )
         self.sd = self.data.sd  # used for correct MAD scaling
         self.lr = lr
+        self.example_input_array = self.get_example_input(kwargs)
 
     def setup(self, stage):
         self.start_time = time()
@@ -99,6 +100,17 @@ class ModelProto(pl.LightningModule):
             },
         }
 
+    def on_train_start(self):
+        self.logger.log_hyperparams(
+            self.hparams,
+            {
+                "hp/val_mad_months": 100,
+                "hp/val_mad_months_reg": -1,
+                "hp/test_mad_months": -1,
+                "hp/test_mad_months_reg": -1,
+            },
+        )
+
     def training_step(self, batch, batch_idx):
         loss, mad, yhat = self._shared_step(batch)
         self.log(
@@ -141,8 +153,9 @@ class ModelProto(pl.LightningModule):
         slope, intercept = self.calculate_prediction_bias(outputs)
         log_dict = {
             "Loss/val_loss_epoch": epoch_loss,
-            "Acurracy/val_mad": epoch_mad,
-            "Acurracy/val_mad_months": epoch_mad * self.sd,
+            "Accuracy/val_mad": epoch_mad,
+            "Accuracy/val_mad_months": epoch_mad * self.sd,
+            "hp/val_mad_months": epoch_mad * self.sd,
             "Pred_bias/intercept": intercept,
             "Pred_bias/slope": slope,
         }
@@ -199,6 +212,18 @@ class ModelProto(pl.LightningModule):
         epoch_mad = torch.stack(mads).sum() / total_n
         return epoch_loss, epoch_mad
 
+    @staticmethod
+    def get_example_input(kwargs):
+        n_channels = (
+            kwargs["n_input_channels"] if "n_input_channels" in kwargs.keys() else 1
+        )
+        width = kwargs["input_width"] if "input_width" in kwargs.keys() else 512
+        height = kwargs["input_height"] if "input_height" in kwargs.keys() else 512
+        return (
+            torch.rand([1, n_channels, width, height]),
+            torch.rand([1, 1]),
+        )
+
 
 class InceptionDbam(ModelProto):
     """
@@ -222,6 +247,10 @@ class InceptionDbam(ModelProto):
             *args,
             **kwargs,
         )
+        self.example_input_array = (
+            torch.rand([1, n_channels, 512, 512]),
+            torch.rand([1, 1]),
+        )
         self.save_hyperparameters()
         if backbone is None:
             feature_extractor = torchvision.models.inception_v3(
@@ -233,6 +262,7 @@ class InceptionDbam(ModelProto):
                 # delete layers after last pooling layer
                 nn.Conv2d(n_channels, 32, kernel_size=3, stride=2),
                 nn.BatchNorm2d(32, eps=0.001),
+                # relu?
                 *list(feature_extractor.children())[1:-2],
             )
         else:
@@ -373,6 +403,9 @@ def from_argparse(args):
         "train_augment": train_augment,
         "data_dir": args.data_dir,
         "mask_dir": args.mask_dirs,
+        "input_height": args.input_height,
+        "input_width": args.input_width,
+        "n_input_channels": args.n_input_channels,
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
