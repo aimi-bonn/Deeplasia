@@ -1,7 +1,6 @@
 """
 Module to manage datasets and loaders
 """
-import logging
 import os
 
 import cv2
@@ -17,12 +16,15 @@ from albumentations.pytorch import ToTensorV2
 
 from lib import preprocessing
 
+import logging
 logger = logging.getLogger(__name__)
 
 class RsnaBoneAgeKaggle(Dataset):
 
     DEFAUL_IMAGE_RESOLUTION = (512, 512)
 
+
+class RsnaBoneAgeKaggle(Dataset):
     def __init__(
         self,
         annotation_path,
@@ -31,6 +33,7 @@ class RsnaBoneAgeKaggle(Dataset):
         data_augmentation=None,
         bone_age_normalization=None,
         epoch_size=None,
+        crop_to_mask=False,
     ):
         """
         Create a RNSA Bone Age (kaggle competition) Dataset
@@ -42,12 +45,14 @@ class RsnaBoneAgeKaggle(Dataset):
         :param annotation_path: path to annotation csv file
         :param img_dir: base dir where images are located
         :param epoch_size: artificial size of an epoch (if None or 0 native size original size)
+        :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
         """
         anno_df = pd.read_csv(annotation_path)
         logger.info(f"Loading annotation data from {annotation_path}")
         logger.info(f"Loading image data from {img_dir}")
         self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
         self.img_dir = img_dir
+        self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
         assert np.all(
             np.vectorize(lambda i: os.path.exists(os.path.join(img_dir, f"{i}.png")))(
                 self.ids
@@ -69,9 +74,11 @@ class RsnaBoneAgeKaggle(Dataset):
             if data_augmentation
             else preprocessing.BoneAgeDataAugmentation(
                 augment=False, output_tensor_size=self.DEFAUL_IMAGE_RESOLUTION
-            )
+                )
         )
         logger.info(f"Augmentations used : {self.data_augmentation}")
+
+        self.crop_to_mask = crop_to_mask
 
         if not bone_age_normalization:
             self.mean_Y = np.mean(self.Y)
@@ -88,6 +95,7 @@ class RsnaBoneAgeKaggle(Dataset):
         if self.mask_dir:
             mask = self._open_mask(index)
             image = cv2.bitwise_and(image, image, mask)  # mask the hand
+            image = self._crop_to_mask(image, mask)
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
         male = torch.Tensor([self.male[index]])
@@ -95,7 +103,6 @@ class RsnaBoneAgeKaggle(Dataset):
         y = self.Y[index]
         y = torch.Tensor([(y - self.mean_Y) / self.sd_Y])
         sample = {"x": image, "male": male, "y": y, "image_name": image_path}
-
         return sample
 
     def __len__(self):
@@ -111,6 +118,15 @@ class RsnaBoneAgeKaggle(Dataset):
             np.std(image) > 1e-5
         ), f"std of image with index {index} is close to zero ({np.std(image)})"
         return image, img_path
+
+    def _crop_to_mask(self, image, mask):
+        """
+        rotate and flip image, and crop to mask if specified
+        """
+        if not self.crop_to_mask:
+            return image
+        else:
+            pass
 
     def _remove_if_mask_missing(self) -> None:
         if not self.mask_dir:
@@ -215,26 +231,22 @@ class RsnaBoneAgeKaggle(Dataset):
 
 
 class RsnaBoneAgeDataModule(pl.LightningDataModule):
-    NO_AUGMENT = A.Compose(
-        [
-            A.augmentations.crops.transforms.RandomResizedCrop(
-                512, 512, scale=(1.0, 1.0), ratio=(1.0, 1.0)
-            ),
-            A.pytorch.ToTensorV2(),
-        ],
-        p=1,
-    )
 
     def __init__(
         self,
-        train_augment,
+        train_augment=None,
         valid_augment=None,
         test_augment=None,
+        width=512,
+        height=512,
         batch_size=32,
         num_workers=4,
         data_dir=constants.path_to_rsna_dir,
         mask_dir=None,
         epoch_size=2048,
+        rotation_angle=0,
+        flip=False,
+        crop_to_mask=False,
     ):
         """
         Dataset class for RSNA bone age data
@@ -245,21 +257,22 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         :param batch_size: batch size
         :param num_workers: number of threads for data loading and preprocessing
         :param data_dir: parent dir containing the data (if None `../../data/annotated/rsna_bone_age/` is assumed) use a ramdisk or local storage for faster access speeds
-        :poram mask_dir: dir or list of dirs containing masks for the presented images. If multiple masks are avaible for any given image, the mask is chosen randomly.
+        :param mask_dir: dir or list of dirs containing masks for the presented images. If multiple masks are available for any given image, the mask is chosen randomly.
         :param epoch_size: (virtual) size of an epoch. If None the true size is used.
+        :param rotation_angle (int): angle to rotate before data augmentation
+        :param flip (bool): flip the image
+        :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
         """
         super().__init__()
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.train_augment = (
-            train_augment if train_augment else RsnaBoneAgeDataModule.NO_AUGMENT
-        )
-        self.valid_augment = (
-            valid_augment if valid_augment else RsnaBoneAgeDataModule.NO_AUGMENT
-        )
-        self.test_augment = (
-            test_augment if test_augment else RsnaBoneAgeDataModule.NO_AUGMENT
-        )
+        self.width = width
+        self.height = height
+
+        default_aug = RsnaBoneAgeDataModule.get_inference_augmentation(width, height, rotation_angle, flip)
+        self.train_augment = train_augment if train_augment else default_aug
+        self.valid_augment = valid_augment if valid_augment else default_aug
+        self.test_augment = test_augment if test_augment else default_aug
 
         if not data_dir:
             data_dir = constants.path_to_rsna_dir
@@ -272,6 +285,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             bone_age_normalization=None,  # calculate renorm based on training set
             epoch_size=epoch_size,
             mask_dir=mask_dir,
+            crop_to_mask=crop_to_mask,
         )
         self.mean, self.sd = self.train.get_norm()
         logger.info(f"Parameters used for bone age normalization: mean = {self.mean} - sd = {self.sd}")
@@ -287,6 +301,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             mask_dir=mask_dir,
             data_augmentation=self.valid_augment,
             bone_age_normalization=(self.mean, self.sd),
+            crop_to_mask=crop_to_mask,
         )
         logger.info(f"====== ====== ====== ====== ======")
         logger.info(f"====== Setting up test data ======")
@@ -296,6 +311,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             mask_dir=mask_dir,
             data_augmentation=self.test_augment,
             bone_age_normalization=(self.mean, self.sd),
+            crop_to_mask=crop_to_mask,
         )
         # self._assert_data_integrity()
 
@@ -325,6 +341,37 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         assert len(self.validation.ids) == 1425
         assert len(self.test.ids) == 200
 
+    @staticmethod
+    def create_inference_module_from_args(args, rotation_angle=0, flip=False):
+        return RsnaBoneAgeDataModule(
+            width=args.input_width,
+            height=args.input_height,
+            batch_size=args.batch_size,  # likely this could be higher
+            num_workers=args.num_workers,
+            data_dir=args.data_dir,
+            mask_dir=args.mask_dirs,
+            rotation_angle=rotation_angle,
+            flip=flip,
+        )
+
+    @staticmethod
+    def get_inference_augmentation(width=512, height=512, rotation_angle=0, flip=False):
+        return A.Compose(
+            [
+                A.transforms.HorizontalFlip(p=flip),
+                A.augmentations.geometric.transforms.Affine(
+                    rotate=(rotation_angle, rotation_angle),
+                    p=1.0,
+                    ),
+                A.augmentations.crops.transforms.RandomResizedCrop(
+                    width, height, scale=(1.0, 1.0),
+                    ratio=(1.0, 1.0)
+                    ),
+                ToTensorV2(),
+                ],
+            p=1,
+            )
+
 
 def add_data_augm_args(parent_parser):
     parent_parser.add_argument("--input_width", type=int, default=512)
@@ -338,7 +385,7 @@ def add_data_augm_args(parent_parser):
     return parent_parser
 
 
-def setup_augmentation(args):
+def setup_training_augmentation(args):
     return A.Compose(
         [
             A.transforms.HorizontalFlip(p=args.flip_p),

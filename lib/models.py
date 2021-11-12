@@ -44,6 +44,8 @@ class ModelProto(pl.LightningModule):
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
         logger.info(f"Setting up data from {data_dir}")
+        self.example_input_array = self.get_example_input(kwargs)
+        width, height = self.example_input_array[0].shape[2:4]
         self.data = datasets.RsnaBoneAgeDataModule(
             train_augment,
             valid_augment=valid_augment,
@@ -53,14 +55,14 @@ class ModelProto(pl.LightningModule):
             epoch_size=epoch_size,
             data_dir=data_dir,
             mask_dir=mask_dir,
+            width=width,
+            height=height,
         )
-        self.sd = self.data.sd  # used for correct MAD scaling
+        self.mean, self.sd = self.data.mean, self.data.sd
         self.lr = lr
-        self.example_input_array = self.get_example_input(kwargs)
 
     def setup(self, stage):
         self.start_time = time()
-        logger.info(f"start training at {self.start_time}")
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self.data.train_dataloader()
@@ -104,10 +106,12 @@ class ModelProto(pl.LightningModule):
         self.logger.log_hyperparams(
             self.hparams,
             {
-                "hp/val_mad_months": 100,
-                "hp/val_mad_months_reg": -1,
+                "hp/validation_mad": -1,
+                "hp/validation_mad_reg": -1,
+                "hp/validation_mad_reg_tta": -1,
                 "hp/test_mad_months": -1,
                 "hp/test_mad_months_reg": -1,
+                "hp/test_mad_months_reg_tta": -1,
             },
         )
 
@@ -156,6 +160,8 @@ class ModelProto(pl.LightningModule):
             "Accuracy/val_mad": epoch_mad,
             "Accuracy/val_mad_months": epoch_mad * self.sd,
             "hp/val_mad_months": epoch_mad * self.sd,
+            "Acurracy/val_mad": epoch_mad,
+            "Acurracy/val_mad_months": epoch_mad * self.sd,
             "Pred_bias/intercept": intercept,
             "Pred_bias/slope": slope,
         }
@@ -393,7 +399,7 @@ def from_argparse(args):
     create model from argparse
     """
     dense, backbone = args.model.split("_")
-    train_augment = datasets.setup_augmentation(args)
+    train_augment = datasets.setup_training_augmentation(args)
     if dense != "dbam":
         raise NotImplementedError
     proto_kwargs = {
@@ -424,3 +430,14 @@ def from_argparse(args):
         )
     else:
         raise NotImplementedError
+
+
+def get_model_class(args):
+    dense, backbone = args.model.split("_")
+    if "efficientnet" in backbone:
+        backbone = "efficientnet"
+    MODEL_ARCHITECTURES = {
+        "inceptionv3": InceptionDbam,
+        "efficientnet": EfficientDbam,
+    }
+    return MODEL_ARCHITECTURES[backbone]
