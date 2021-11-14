@@ -9,7 +9,7 @@ from argparse import ArgumentParser
 
 sys.path.append("..")
 
-from lib import constants, utils
+from lib import constants, utils, testing
 from lib.models import *
 
 
@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--random_seed", type=int, default=42)
     parser = add_model_args(parser)
     parser = pl.Trainer.add_argparse_args(parser)
+    parser = testing.add_eval_args(parser)
     args = parser.parse_args()
 
     logger = logging.getLogger()
@@ -41,7 +42,8 @@ def main():
         auto_insert_metric_name=False,
         verbose=True,
     )
-    callbacks = [lr_monitor, ckp_callback]
+    gpu_stats = pl.callbacks.GPUStatsMonitor(memory_utilization=True, gpu_utilization=True)
+    callbacks = [lr_monitor, ckp_callback, gpu_stats]
     model = from_argparse(args)
     trainer = pl.Trainer.from_argparse_args(
         args,
@@ -53,15 +55,11 @@ def main():
     logger.info(f"===== Training finished ======")
     logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}min")
 
-    log_dict = {
-        "hp/val_mad_months": 5,
-        "hp/val_mad_months_reg": 2,
-        "hp/test_mad_months": 42,
-        "hp/test_mad_months_reg": 1.5,
-    }
+    log_dict = testing.evaluate_bone_age_model(
+        ckp_callback.best_model_path, args, tb_logger.log_dir
+    )
     model.logger.log_metrics(log_dict)
-
-    test_loop()
+    logger.info(f"======= END =========")
 
 
 if __name__ == "__main__":

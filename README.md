@@ -15,7 +15,8 @@ Some useful args are
   * `overfit_batches` option for reducing number of used batches for developing and debugging
   * `stochastic_wheight_avg`
   * `auto_select_gpus` use all gpus available, see [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#pytorch_lightning.trainer.Trainer.params.auto_select_gpus)
-  
+  * `resume_from_checkpoint` continue from existing checkpoint (Note: this creates a new run, so it will create a new checkpoint and tensorboard logs)
+
 A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
 ## Logging

@@ -44,6 +44,8 @@ class ModelProto(pl.LightningModule):
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
         logger.info(f"Setting up data from {data_dir}")
+        self.example_input_array = self.get_example_input(kwargs)
+        width, height = self.example_input_array[0].shape[2:4]
         self.data = datasets.RsnaBoneAgeDataModule(
             train_augment,
             valid_augment=valid_augment,
@@ -53,10 +55,11 @@ class ModelProto(pl.LightningModule):
             epoch_size=epoch_size,
             data_dir=data_dir,
             mask_dir=mask_dir,
+            width=width,
+            height=height,
         )
-        self.sd = self.data.sd  # used for correct MAD scaling
+        self.y_mean, self.y_sd = self.data.mean, self.data.sd
         self.lr = lr
-        self.example_input_array = self.get_example_input(kwargs)
 
     def setup(self, stage):
         self.start_time = time()
@@ -104,11 +107,12 @@ class ModelProto(pl.LightningModule):
         self.logger.log_hyperparams(
             self.hparams,
             {
-                "Accuracy/train_mad_months": 100,
-                "Accuracy/val_mad_months": 100,
-                "hp/val_mad_months_reg": -1,
-                "hp/test_mad_months": -1,
-                "hp/test_mad_months_reg": -1,
+                "hp/validation_mad": -1,
+                "hp/validation_mad_reg": -1,
+                "hp/validation_mad_reg_tta": -1,
+                "hp/test_mad": -1,
+                "hp/test_mad_reg": -1,
+                "hp/test_mad_reg_tta": -1,
             },
         )
 
@@ -124,14 +128,14 @@ class ModelProto(pl.LightningModule):
         log_dict = {
             "Loss/train_loss_epoch": epoch_loss,
             "Accuracy/train_mad": epoch_mad,
-            "Accuracy/train_mad_months": epoch_mad * self.sd,
+            "Accuracy/train_mad_months": epoch_mad * self.y_sd,
         }
         wall_time = time() - self.start_time
         wall_time = round(wall_time / 60)
         self.logger.log_metrics(log_dict, step=self.current_epoch)
         self.logger.experiment.add_scalars(
             "Accuracy/MAD_months",
-            {"train": epoch_mad * self.sd},
+            {"train": epoch_mad * self.y_sd},
             global_step=self.current_epoch,
         )
 
@@ -152,14 +156,14 @@ class ModelProto(pl.LightningModule):
         log_dict = {
             "Loss/val_loss_epoch": epoch_loss,
             "Accuracy/val_mad": epoch_mad,
-            "Accuracy/val_mad_months": epoch_mad * self.sd,
+            "Accuracy/val_mad_months": epoch_mad * self.y_sd,
             "Pred_bias/intercept": intercept,
             "Pred_bias/slope": slope,
         }
         self.logger.log_metrics(log_dict, step=self.current_epoch)
         self.logger.experiment.add_scalars(
             "Accuracy/MAD_months",
-            {"val": epoch_mad * self.sd},
+            {"val": epoch_mad * self.y_sd},
             global_step=self.current_epoch,
         )
 
@@ -387,7 +391,7 @@ def from_argparse(args):
     create model from argparse
     """
     dense, backbone = args.model.split("_")
-    train_augment = datasets.setup_augmentation(args)
+    train_augment = datasets.setup_training_augmentation(args)
     if dense != "dbam":
         raise NotImplementedError
     proto_kwargs = {
@@ -418,3 +422,14 @@ def from_argparse(args):
         )
     else:
         raise NotImplementedError
+
+
+def get_model_class(args):
+    dense, backbone = args.model.split("_")
+    if "efficientnet" in backbone:
+        backbone = "efficientnet"
+    MODEL_ARCHITECTURES = {
+        "inceptionv3": InceptionDbam,
+        "efficientnet": EfficientDbam,
+    }
+    return MODEL_ARCHITECTURES[backbone]

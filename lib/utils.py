@@ -17,6 +17,7 @@ import albumentations
 
 import pandas as pd
 
+sys.path.append("..")
 from lib import constants
 
 import logging

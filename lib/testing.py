@@ -1,133 +1,198 @@
 """
 module for custom functions used for evaluation and validation of trained models
 """
-import os
+import logging, logging.config
+logger = logging.getLogger(__name__)
 
-from PIL import Image, ImageFile
-import PIL
+import os
+from argparse import ArgumentParser
+
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy import linalg as la
 from scipy import stats
 from sklearn.metrics import mean_absolute_error
 import torch
 import pandas as pd
+import functools
+from torch.utils.data import DataLoader
 
-from lib import dataset
+from lib import datasets, models
 
 
-class RsnaBoneAgeTestAugmentationLoader(dataset.RsnaBoneAgeKaggle):
-    """implements fixed interval rotations and flips for test time augmentation"""
+def add_eval_args(parent_parser):
+    parser = parent_parser.add_argument_group("Evaluation")
+    parser.add_argument("--test_tta_rot", type=bool, default=True)
+    parser.add_argument("--test_tta_flip", type=bool, default=True)
+    parser.add_argument("--train_tta_rot", type=bool, default=False)
+    parser.add_argument("--train_tta_flip", type=bool, default=False)
+    parser.add_argument("--regress", type=bool, default=True)
+    return parent_parser
 
-    def __init__(
-        self,
-        annotation_path,
-        img_dir,
-        rotations=[0],
-        horizontal_flip=False,
-        vertical_flip=False,
-    ):
-        super(RsnaBoneAgeTestAugmentationLoader, self).__init__(
-            annotation_path, img_dir
+
+def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
+
+    logger.info("====== Testing model =====")
+
+    tta_rotations_test = [-10, -5, 0, 5, 10] if args.test_tta_rot else [0]
+    tta_rotations_train = [-10, -5, 0, 5, 10] if args.train_tta_rot else [0]
+    logger.info("Starting inference")
+    dfs = predict_from_checkpoint(
+        ckp_path=ckp_path,
+        args=args,
+        tta_rotations_test=tta_rotations_test,
+        tta_flip_test=args.test_tta_flip,
+        tta_rotations_train=tta_rotations_train,
+        tta_flip_train=args.train_tta_flip,
+    )
+    results = {name: df for name, df in zip(["train", "validation", "test"], dfs)}
+
+    def mad(df, yhat_key="y_hat"):
+        return la.norm(df["y"] - df[yhat_key], 1) / len(df)
+
+    for name, df in results.items():
+        logger.info(
+            f"{name} mad (without TTA and regression): {mad(df, 'y_hat-rot=0-no_flip')}"
         )
-        self.rotations = rotations
-        self.horizontal_flip = horizontal_flip
-        self.vertical_flip = vertical_flip
-        self.n_aug = len(rotations)
-        if horizontal_flip:
-            self.n_aug *= 2
-        if vertical_flip:
-            self.n_aug *= 2
-     
+    log_dict = {
+        "hp/validation_mad": mad(results["validation"], "y_hat-rot=0-no_flip"),
+        "hp/validation_mad_reg": -1,
+        "hp/validation_mad_reg_tta": -1,
+        "hp/test_mad": mad(results["test"], "y_hat-rot=0-no_flip"),
+        "hp/test_mad_reg": -1,
+        "hp/test_mad_reg_tta": -1,
+    }
+    logger.info("===== regress correct on raw images =====")
+    if args.regress:
+        slope, intercept, _, _, _ = calc_prediction_bias(
+            results["train"]["y"], results["train"]["y_hat-rot=0-no_flip"]
+        )
+        for name, df in results.items():
+            df["y_hat_reg"] = cor_prediction_bias(
+                df["y_hat-rot=0-no_flip"], slope, intercept
+            )
+            logger.info(f"{name} mad (after regression): {mad(df, 'y_hat_reg')}")
+        for name in ["validation", "test"]:
+            log_dict[f"hp/{name}_mad_reg"] = mad(results[name], "y_hat_reg")
 
-    def __getitem__(self, index):
-        """index needs to be an Int"""
-         # TODO fix
-        from torchvision.transforms import transforms
-        self.data_augmentation = transforms.Compose(
-                [
-                    transforms.RandomResizedCrop(
-                        (500, 500), scale=(1, 1), ratio=(1, 1)
-                    ),
-                    transforms.ToTensor(),
-                ]
-            )  # only scale image to the specified input size
+    if args.regress and (args.test_tta_rot or args.test_tta_flip):
+        slope, intercept, _, _, _ = calc_prediction_bias(
+            results["train"]["y"], results["train"]["y_hat"]
+        )
+        for name, df in results.items():
+            df["y_hat_reg_tta"] = cor_prediction_bias(df["y_hat"], slope, intercept)
+            logger.info(
+                f"{name} mad (after regression and TTA): {mad(df, 'y_hat_reg_tta')}"
+            )
+        for name in ["validation", "test"]:
+            log_dict[f"hp/{name}_mad_reg_tta"] = mad(results[name], "y_hat_reg")
 
-        
-        img = self.open_image(index)
-        images = []
-        for rot in self.rotations:
-            rot_img = img.rotate(rot)
-            images.append(rot_img)
-            if self.horizontal_flip:
-                images.append(PIL.ImageOps.mirror(rot_img))
-            if self.vertical_flip:
-                images.append(PIL.ImageOps.flip(rot_img))
-            if self.vertical_flip and self.horizontal_flip:
-                images.append(PIL.ImageOps.mirror(rot_img))
-
-        images = torch.stack([self.data_augmentation(i) for i in images], dim=0)
-        male = torch.Tensor([[self.male[index]]]).repeat(self.n_aug, 1)
-        y = torch.Tensor([self.Y[index]])
-        return {"x": images, "male": male, "y": y}
-
-    
-    def open_image(self, index):
-        img_path = os.path.join(self.img_dir, f"{self.ids[index]}.png")
-        ImageFile.LOAD_TRUNCATED_IMAGES = True
-        image = Image.open(img_path)
-        assert (
-            np.sum(image) != 0
-        ), f"image with index {index} is all black (sum is {np.sum(image)})"
-        assert (
-            np.std(image) > 1e-5
-        ), f"std of image with index {index} is close to zero ({np.std(image)})"
-        return image
+    if output_dir:
+        output_dir = os.path.join(output_dir, "predictions")
+        os.makedirs(output_dir, exist_ok=True)
+        logger.info(f"saving outputs to {output_dir}")
+        for name, df in results.items():
+            df.to_csv(os.path.join(output_dir, f"{name}_pred.csv"))
+    return log_dict
 
 
-    def evaluate_model(self, model, renorm=(0, 1), device_loc="cpu"):
-        """convenience function to test all images with all specified augmentations
+def predict_from_checkpoint(
+    ckp_path,
+    args,
+    tta_rotations_test=[-10, -5, 0, 5, 10],
+    tta_flip_test=True,
+    tta_rotations_train=[0],
+    tta_flip_train=False,
+) -> [pd.DataFrame]:
+    model = models.get_model_class(args).load_from_checkpoint(ckp_path)
+    mean, sd = model.y_mean, model.y_sd
 
-        :param model: torch.nn.Model to evaluate
-        :param renorm: (Float, Float). Mean and std used for bone age normalization
-        :param device_loc: str. Localization to run evaluation (either 'cpu' or
-        'cuda:{device #}')
+    train_df = predict_bone_age(
+        model,
+        args,
+        tta_rotations_train,
+        tta_flip_train,
+        os.path.join(args.data_dir, "annotation_bone_age_training_data_set.csv"),
+        os.path.join(args.data_dir, "bone_age_training_data_set"),
+        args.mask_dirs,
+        mean,
+        sd,
+    )
+    val_df = predict_bone_age(
+        model,
+        args,
+        tta_rotations_test,
+        tta_flip_test,
+        os.path.join(args.data_dir, "annotation_bone_age_validation_data_set.csv"),
+        os.path.join(args.data_dir, "bone_age_validation_data_set"),
+        args.mask_dirs,
+        mean,
+        sd,
+    )
+    test_df = predict_bone_age(
+        model,
+        args,
+        tta_rotations_test,
+        tta_flip_test,
+        os.path.join(args.data_dir, "annotation_bone_age_test_data_set.csv"),
+        os.path.join(args.data_dir, "bone_age_test_data_set"),
+        args.mask_dirs,
+        mean,
+        sd,
+    )
 
-        :return pandas.DataFrame containing the predictions (y_hat) in the original scale
-        """
-        model.to(device_loc)
-        mu, sigma = renorm
-        model.eval()
-        with torch.set_grad_enabled(False):
-            l = [
-                np.array(
-                    model(
-                        alter_ego["x"].to(device_loc), alter_ego["male"].to(device_loc)
-                    ).cpu()
-                ).flatten()
-                for alter_ego in self
-            ]
-        results = np.array(l) * sigma + mu
-        results = pd.DataFrame(results, columns=self._get_augmentation_labels())
-        results["y"] = self.get_ground_truth_labels()
-        return results
+    def vote(df):
+        df["y_hat"] = df[
+            df.columns[df.columns.to_series().str.contains("y_hat")]
+        ].apply(np.mean, axis=1)
+        return df
 
-    def get_ground_truth_labels(self):
-        return self.Y
+    train_df, val_df, test_df = vote(train_df), vote(val_df), vote(test_df)
+    return train_df, val_df, test_df
 
-    def _get_augmentation_labels(self):
-        l = []
-        for rot in self.rotations:
-            l.append(f"y_hat_rot_{rot}deg")
-            if self.horizontal_flip:
-                l.append(f"y_hat_rot_{rot}deg_horFlip")
-            if self.vertical_flip:
-                l.append(f"y_hat_rot_{rot}deg_vertFlip")
-            if self.vertical_flip and self.horizontal_flip:
-                l.append(f"y_hat_rot_{rot}deg_vert_hor_Flip")
-        return l
 
-def predict_from_loader(model, data_loader, on_cpu=False):
+def predict_bone_age(
+    model, args, rotations, flip_img, anno_csv, img_dir, mask_dir, mean, sd
+) -> pd.DataFrame:
+    l = []
+    columns = ["filename", "male", "y"]
+    flips = ["no_flip", "flip"] if flip_img else ["no_flip"]
+
+    def make_df(pred, yhat_name):
+        colnames = ["filename", "male", "y", yhat_name]
+        d = {name: arr for name, arr in zip(colnames, pred)}
+        return pd.DataFrame(d)
+
+    for rot_angle in rotations:
+        for flip in flips:
+            dataset = datasets.RsnaBoneAgeKaggle(
+                annotation_path=anno_csv,
+                img_dir=img_dir,
+                mask_dir=mask_dir,
+                data_augmentation=datasets.RsnaBoneAgeDataModule.get_inference_augmentation(
+                    args.input_width, args.input_height, rot_angle, (flip == "flip")
+                ),
+                bone_age_normalization=(mean, sd),
+                epoch_size=None,
+                crop_to_mask=False,
+            )
+            pred = predict_from_loader(
+                model,
+                DataLoader(
+                    dataset,
+                    num_workers=args.num_workers,
+                    batch_size=args.batch_size,
+                ),
+                mean=mean,
+                sd=sd,
+            )
+            l.append(make_df([*pred], f"y_hat-rot={rot_angle}-{flip}"))
+    return functools.reduce(lambda left, right: pd.merge(left, right, on=columns), l)
+
+
+def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
+    # TODO add hook and also save activations after ConvNet
     device_loc = "cpu"
     if not on_cpu:
         model.cuda()
@@ -136,15 +201,22 @@ def predict_from_loader(model, data_loader, on_cpu=False):
     y_hats = []
     ys = []
     image_names = []
+    males = []
     with torch.set_grad_enabled(False):
-        for batch in data_loader: 
-            y_hats.append(model(batch["x"].to(device_loc), batch["male"].to(device_loc)).cpu().squeeze())
+        for batch in data_loader:
+            y_hats.append(
+                model(batch["x"].to(device_loc), batch["male"].to(device_loc))
+                .cpu()
+                .squeeze()
+            )
             ys.append(batch["y"])
             image_names.append(batch["image_name"])
-    ys = torch.cat(ys).squeeze().numpy()
-    y_hats = torch.cat(y_hats).numpy()
+            males.append(batch["male"])
+    ys = torch.cat(ys).squeeze().numpy() * sd + mean
+    y_hats = torch.cat(y_hats).numpy() * sd + mean
     image_names = np.array([name for batch in image_names for name in batch])
-    return y_hats, ys, image_names
+    males = np.array([male for batch in males for male in batch])
+    return image_names, males, ys, y_hats
 
 
 def evaluate_predictions(
@@ -196,10 +268,8 @@ def calc_prediction_bias(y, yhat, verbose=True):
     """calculates the predicted signed error (yhat - y) for each prediction and performs a linear regression"""
     slope, intercept, r_value, p_value, std_err = stats.linregress(yhat, yhat - y)
     if verbose:
-        print(
-            "Linear bias prediction:\nslope: {:.4f}\nintercept: {:.4f}\nr = {:.4f}\np-value = {:.1E}\nstd error = {:.1E}".format(
-                slope, intercept, r_value, p_value, std_err
-            )
+        logger.info(
+            f"Linear bias prediction:\nslope: {slope:.4f}\nintercept: {intercept:.4f}\nr = {r_value:.4f}\np-value = {p_value:.1E}\nstd error = {std_err:.1E}"
         )
     return slope, intercept, r_value, p_value, std_err
 
