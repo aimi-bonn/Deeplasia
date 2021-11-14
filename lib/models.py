@@ -58,11 +58,12 @@ class ModelProto(pl.LightningModule):
             width=width,
             height=height,
         )
-        self.mean, self.sd = self.data.mean, self.data.sd
+        self.y_mean, self.y_sd = self.data.mean, self.data.sd
         self.lr = lr
 
     def setup(self, stage):
         self.start_time = time()
+        logger.info(f"====== start training ======")
 
     def train_dataloader(self) -> TRAIN_DATALOADERS:
         return self.data.train_dataloader()
@@ -109,9 +110,9 @@ class ModelProto(pl.LightningModule):
                 "hp/validation_mad": -1,
                 "hp/validation_mad_reg": -1,
                 "hp/validation_mad_reg_tta": -1,
-                "hp/test_mad_months": -1,
-                "hp/test_mad_months_reg": -1,
-                "hp/test_mad_months_reg_tta": -1,
+                "hp/test_mad": -1,
+                "hp/test_mad_reg": -1,
+                "hp/test_mad_reg_tta": -1,
             },
         )
 
@@ -127,17 +128,14 @@ class ModelProto(pl.LightningModule):
         log_dict = {
             "Loss/train_loss_epoch": epoch_loss,
             "Accuracy/train_mad": epoch_mad,
-            "Accuracy/train_mad_months": epoch_mad * self.sd,
+            "Accuracy/train_mad_months": epoch_mad * self.y_sd,
         }
         wall_time = time() - self.start_time
         wall_time = round(wall_time / 60)
         self.logger.log_metrics(log_dict, step=self.current_epoch)
-        # self.logger.experiment.add_scalars(
-        #     "Loss/losses", {"train": epoch_loss}, global_step=self.current_epoch
-        # )
         self.logger.experiment.add_scalars(
             "Accuracy/MAD_months",
-            {"train": epoch_mad * self.sd},
+            {"train": epoch_mad * self.y_sd},
             global_step=self.current_epoch,
         )
 
@@ -158,20 +156,14 @@ class ModelProto(pl.LightningModule):
         log_dict = {
             "Loss/val_loss_epoch": epoch_loss,
             "Accuracy/val_mad": epoch_mad,
-            "Accuracy/val_mad_months": epoch_mad * self.sd,
-            "hp/val_mad_months": epoch_mad * self.sd,
-            "Acurracy/val_mad": epoch_mad,
-            "Acurracy/val_mad_months": epoch_mad * self.sd,
+            "Accuracy/val_mad_months": epoch_mad * self.y_sd,
             "Pred_bias/intercept": intercept,
             "Pred_bias/slope": slope,
         }
         self.logger.log_metrics(log_dict, step=self.current_epoch)
-        # self.logger.experiment.add_scalars(
-        #     "losses", {"val": epoch_loss}, global_step=self.current_epoch
-        # )
         self.logger.experiment.add_scalars(
             "Accuracy/MAD_months",
-            {"val": epoch_mad * self.sd},
+            {"val": epoch_mad * self.y_sd},
             global_step=self.current_epoch,
         )
 

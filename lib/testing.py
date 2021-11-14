@@ -106,7 +106,7 @@ def predict_from_checkpoint(
     tta_flip_train=False,
 ) -> [pd.DataFrame]:
     model = models.get_model_class(args).load_from_checkpoint(ckp_path)
-    mean, sd = model.data.mean, model.data.sd  # TODO change to model.sd, model.mean
+    mean, sd = model.y_mean, model.y_sd
 
     train_df = predict_bone_age(
         model,

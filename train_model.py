@@ -35,9 +35,12 @@ def main():
     ckp_callback = pl.callbacks.ModelCheckpoint(
         monitor="Loss/val_loss",
         dirpath=output_dir,
-        filename="{epoch:03d}-{val_loss:.4f}",
+        filename="model-epoch_{epoch:03d}-val_loss={Loss/val_loss:.3f}",
         save_top_k=3,
         mode="min",
+        save_last=True,
+        auto_insert_metric_name=False,
+        verbose=True,
     )
     gpu_stats = pl.callbacks.GPUStatsMonitor(memory_utilization=True, gpu_utilization=True)
     callbacks = [lr_monitor, ckp_callback, gpu_stats]
