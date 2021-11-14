@@ -11,6 +11,7 @@ sys.path.append("..")
 from lib import utils, testing
 from lib.models import *
 
+
 def main():
     parser = ArgumentParser()
     parser.add_argument("--ckp_path", type=str)
@@ -29,6 +30,7 @@ def main():
 
     utils.log_system_info(logger)
     testing.evaluate_bone_age_model(args.ckp_path, args, args.output_dir)
+
 
 if __name__ == "__main__":
     main()

@@ -17,7 +17,9 @@ from albumentations.pytorch import ToTensorV2
 from lib import preprocessing
 
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 class RsnaBoneAgeKaggle(Dataset):
 
@@ -72,13 +74,12 @@ class RsnaBoneAgeKaggle(Dataset):
         self.data_augmentation = (
             data_augmentation
             if data_augmentation
-            else preprocessing.BoneAgeDataAugmentation(
-                augment=False, output_tensor_size=self.DEFAUL_IMAGE_RESOLUTION
-                )
+            else RsnaBoneAgeDataModule.get_inference_augmentation()
         )
         logger.info(f"Augmentations used : {self.data_augmentation}")
 
         self.crop_to_mask = crop_to_mask
+        self.crop_size = 1.3
 
         if not bone_age_normalization:
             self.mean_Y = np.mean(self.Y)
@@ -125,8 +126,38 @@ class RsnaBoneAgeKaggle(Dataset):
         """
         if not self.crop_to_mask:
             return image
-        else:
-            pass
+
+        x = np.nonzero(np.max(mask, axis=0))
+        xmin, xmax = (np.min(x), np.max(x) + 1)
+        y = np.nonzero(np.max(mask, axis=1))
+        ymin, ymax = (np.min(y), np.max(y) + 1)
+        width = xmax - xmin
+        height = ymax - ymin
+        x_center = xmin + width // 2
+        y_center = ymin + height // 2
+
+        size = max(height, width)
+        size = round(size * self.crop_size)
+
+        xmin_new = x_center - size // 2
+        xmax_new = x_center + size // 2
+        ymin_new = y_center - size // 2
+        ymax_new = y_center + size // 2
+
+        top = abs(min(0, ymin_new))
+        bottom = max(0, ymax_new - mask.shape[0])
+        left = abs(min(0, xmin_new))
+        right = max(0, xmax_new - mask.shape[1])
+
+        out = cv2.copyMakeBorder(
+            image, top, bottom, left, right, borderType=cv2.BORDER_CONSTANT
+        )
+        ymax_new += top
+        ymin_new += top
+        xmax_new += left
+        xmin_new += left
+
+        return out[ymin_new:ymax_new, xmin_new:xmax_new]
 
     def _remove_if_mask_missing(self) -> None:
         if not self.mask_dir:
@@ -143,9 +174,14 @@ class RsnaBoneAgeKaggle(Dataset):
                     self.ids
                 )
             )
-            logger.info(f"Number of masks available at {d} : {sum(avail_masks)} / {len(self.ids)}")
+            logger.info(
+                f"Number of masks available at {d} : {sum(avail_masks)} / {len(self.ids)}"
+            )
         avail_masks = np.array(avail_masks).max(axis=0)
-        logger.info(f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.ids)}")
+        logger.info(
+            f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.ids)}"
+        )
+        print(sum(avail_masks))
         self.ids = self.ids[np.where(avail_masks)]
         self.male = self.male[np.where(avail_masks)]
         self.Y = self.Y[np.where(avail_masks)]
@@ -231,7 +267,6 @@ class RsnaBoneAgeKaggle(Dataset):
 
 
 class RsnaBoneAgeDataModule(pl.LightningDataModule):
-
     def __init__(
         self,
         train_augment=None,
@@ -269,7 +304,9 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         self.width = width
         self.height = height
 
-        default_aug = RsnaBoneAgeDataModule.get_inference_augmentation(width, height, rotation_angle, flip)
+        default_aug = RsnaBoneAgeDataModule.get_inference_augmentation(
+            width, height, rotation_angle, flip
+        )
         self.train_augment = train_augment if train_augment else default_aug
         self.valid_augment = valid_augment if valid_augment else default_aug
         self.test_augment = test_augment if test_augment else default_aug
@@ -288,7 +325,9 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             crop_to_mask=crop_to_mask,
         )
         self.mean, self.sd = self.train.get_norm()
-        logger.info(f"Parameters used for bone age normalization: mean = {self.mean} - sd = {self.sd}")
+        logger.info(
+            f"Parameters used for bone age normalization: mean = {self.mean} - sd = {self.sd}"
+        )
         logger.info(f"====== ====== ====== ====== ====== ======")
         logger.info(f"====== Setting up validation data ======")
         logger.info(f"Setting up validation data")
@@ -362,15 +401,14 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                 A.augmentations.geometric.transforms.Affine(
                     rotate=(rotation_angle, rotation_angle),
                     p=1.0,
-                    ),
+                ),
                 A.augmentations.crops.transforms.RandomResizedCrop(
-                    width, height, scale=(1.0, 1.0),
-                    ratio=(1.0, 1.0)
-                    ),
+                    width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+                ),
                 ToTensorV2(),
-                ],
+            ],
             p=1,
-            )
+        )
 
 
 def add_data_augm_args(parent_parser):
