@@ -238,6 +238,7 @@ class InceptionDbam(ModelProto):
         n_channels=1,
         pretrained=False,
         backbone=None,
+        bn_momentum=0.01,
         *args,
         **kwargs,
     ):
@@ -267,7 +268,7 @@ class InceptionDbam(ModelProto):
             self.features = backbone
         for mod in list(self.features.modules()):
             if isinstance(mod, torch.nn.BatchNorm2d):
-                mod.momemtum = 0.01  # previously 0.1
+                mod.momemtum = bn_momentum  # previously 0.1
         self.dropout1 = nn.Dropout(p=0.2)
         self.male_fc = nn.Linear(1, 32)
         self.fc1 = nn.Linear(2048 + 32, 1024)
@@ -370,6 +371,7 @@ def add_model_args(parent_parser):
     parser.add_argument(
         "--model", type=str, help="define architecture (e.g. dbam_efficientnet-b0"
     )
+    parser.add_argument("--learning_rate", type=float, default=1e-3)
     parser.add_argument(
         "--data_dir",
         type=str,
@@ -395,6 +397,7 @@ def from_argparse(args):
     if dense != "dbam":
         raise NotImplementedError
     proto_kwargs = {
+        "lr" : args.learning_rate,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "epoch_size": args.epoch_size,
