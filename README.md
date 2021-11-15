@@ -1,15 +1,26 @@
 # Bone Age
 
-Bone Age
+Now everything is integrated into [pytorch-lightning](https://pytorch-lightning.readthedocs.io/en/latest/) which is basically a wrapper for pytorch code and fully compatible. 
+Mainly, we are using the lightning Trainer instead of our own loop, so all the parameters for training (e.g. gpus, checkpoints files, etc.) are specified by the Trainer.
 
-Saved model weights for EfficientdBAM trained on masked images:
-https://uni-bonn.sciebo.de/s/iqhh2PZVEy5vAPb
+## Command line
+On the inside the trainer is called and the trainer arguments are parsed from the commandline. 
+Hence, all args can be directly specified on the commandline upon calling the `main.py`. 
 
-Saved model weights for EfficientdBAM trained on Non-masked images:
-https://uni-bonn.sciebo.de/s/6Qgw3q2CwGXFepN
+Some useful args are
+  * `precision` (e.g. 16 or 'bf16')
+  * `ckpt_path` path to checkpoint to resume training from
+  * `max_steps` maximum steps
+  * `max_time` time after which the training ends (e.g. `00:01:00:00` for 1h )
+  * `overfit_batches` option for reducing number of used batches for developing and debugging
+  * `stochastic_wheight_avg`
+  * `auto_select_gpus` use all gpus available, see [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#pytorch_lightning.trainer.Trainer.params.auto_select_gpus)
+  * `resume_from_checkpoint` continue from existing checkpoint (Note: this creates a new run, so it will create a new checkpoint and tensorboard logs)
 
-password: boneage
+A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
-Last command-line arguments used to train a model:
+## Logging
+As pre-defined, the run will create an output `run.log` in the main dir. For real runs the log should be moved to `bone_age/output/{run_name}/run.log`. The workaround to archive this is setting and evironment variable called `LOG_DIR` before running the script.
 
-`--model-type EfficientdBAM --use_gender --session 20 --use_tensorboard --save-model --batch-size 12 --grad_acc_interval 3 --epochs 20 --lr 1e-4`
+## Code formatting
+Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.

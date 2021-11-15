@@ -66,10 +66,11 @@ output/
 !annotations.csv
 
 # tmp files
-notebooks/playground/
+nb/playground/
+
 
 ## run log file
-*/logs/*
+*logs*
 run.log
 
 ##
