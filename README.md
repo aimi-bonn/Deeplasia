@@ -20,7 +20,15 @@ Some useful args are
 A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
 ## Logging
-As pre-defined, the run will create an output `run.log` in the main dir. For real runs the log should be moved to `bone_age/output/{run_name}/run.log`. The workaround to archive this is setting and evironment variable called `LOG_DIR` before running the script.
+As pre-defined, the run will create an output `run.log` in the main dir.
+For real runs the log should be moved to `bone_age/output/{run_name}/{version_number}/run.log`.
+The workaround to archive this is creating the according folder structure **before** running the script and setting an evironment variable called `LOG_DIR`:
+
+Hence, actual runs should be called like: 
+``` bash
+$LOG_DIR="output/{run_name}/{version_number}/run.log" python train_model.py --model dbam-inceptionv3 --gpus 1 ...
+```
+
 
 ## Code formatting
 Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.

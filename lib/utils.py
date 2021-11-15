@@ -61,7 +61,7 @@ LOG_CONFIG = {
             "class": "logging.handlers.RotatingFileHandler",
             "formatter": "standard",
             "level": "INFO",
-            "filename": os.getenv("LOG_FILE") if os.getenv("LOG_DIR") else "run.log",
+            "filename": os.getenv("LOG_FILE", "run.log"),
             "mode": "a",
             "encoding": "utf-8",
             "maxBytes": 500000,
@@ -90,7 +90,7 @@ import sys
 
 
 def set_logger(level=""):
-    """ Function to set up the handle error logging.
+    """Function to set up the handle error logging.
     logger (obj) = a logger object
     logLevel (str) = level of information to print out, options are
     {info, debug} [Default: info]
@@ -101,7 +101,7 @@ def set_logger(level=""):
     error = logging.ERROR
 
     # Determine log level
-    if level == 'debug':
+    if level == "debug":
         _level = logging.DEBUG
     else:
         _level = logging.INFO
@@ -110,7 +110,7 @@ def set_logger(level=""):
     logger.setLevel(_level)
 
     # Set the log format
-    log_fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    log_fmt = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
     # Set logger output to STDOUT and STDERR
     log_handler = logging.StreamHandler(stream=sys.stdout)
@@ -130,8 +130,6 @@ def set_logger(level=""):
     logger.addHandler(err_handler)
 
     return logger
-
-
 
 
 def change_log_output_dir(new_dir, name="run.log"):  # doesn't work for all logs
