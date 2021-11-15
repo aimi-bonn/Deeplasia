@@ -2,6 +2,7 @@
 module for custom functions used for evaluation and validation of trained models
 """
 import logging, logging.config
+
 logger = logging.getLogger(__name__)
 
 import os
@@ -12,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from numpy import linalg as la
 from scipy import stats
-from sklearn.metrics import mean_absolute_error
 import torch
 import pandas as pd
 import functools
@@ -183,6 +183,7 @@ def predict_bone_age(
                     dataset,
                     num_workers=args.num_workers,
                     batch_size=args.batch_size,
+                    drop_last=False,
                 ),
                 mean=mean,
                 sd=sd,
@@ -223,7 +224,7 @@ def evaluate_predictions(
     df,
     y_col="boneage",
     yhat_col="pred_age",
-    error_func=mean_absolute_error,
+    error_func=None,
     title="add Title",
     error_pos_x=0,
     error_pos_y=220,

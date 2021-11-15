@@ -7,14 +7,11 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
-from PIL import Image, ImageFile
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
 from lib import constants
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-
-from lib import preprocessing
 
 import logging
 
@@ -169,19 +166,17 @@ class RsnaBoneAgeKaggle(Dataset):
         logger.info(f"Used masking dirs : {self.mask_dir}")
         avail_masks = []
         for d in self.mask_dir:
-            avail_masks.append(
-                np.vectorize(lambda i: os.path.exists(os.path.join(d, f"{i}.png")))(
-                    self.ids
-                )
-            )
+            masks_in_dir = np.vectorize(
+                lambda i: os.path.exists(os.path.join(d, f"{i}.png"))
+            )(self.ids)
             logger.info(
-                f"Number of masks available at {d} : {sum(avail_masks)} / {len(self.ids)}"
+                f"Number of masks available at {d} : {sum(masks_in_dir)} / {len(self.ids)}"
             )
+            avail_masks.append(masks_in_dir)
         avail_masks = np.array(avail_masks).max(axis=0)
         logger.info(
             f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.ids)}"
         )
-        print(sum(avail_masks))
         self.ids = self.ids[np.where(avail_masks)]
         self.male = self.male[np.where(avail_masks)]
         self.Y = self.Y[np.where(avail_masks)]
@@ -226,8 +221,7 @@ class RsnaBoneAgeKaggle(Dataset):
 
         for index in tqdm(dataset.ids):
             img_path = os.path.join(dataset.img_dir, f"{index}.png")
-            ImageFile.LOAD_TRUNCATED_IMAGES = True
-            image = Image.open(img_path)
+            image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
             if np.sum(image) == 0:
                 print(f"image with index {index} is all black (sum is {np.sum(image)})")
             if np.std(image) < 1e-5:

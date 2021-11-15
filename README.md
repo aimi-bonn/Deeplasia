@@ -5,7 +5,7 @@ Mainly, we are using the lightning Trainer instead of our own loop, so all the p
 
 ## Command line
 On the inside the trainer is called and the trainer arguments are parsed from the commandline. 
-Hence, all args can be directly specified on the commandline upon calling the `main.py`. 
+Hence, all args can be directly specified on the commandline upon calling the `train_model.py`. 
 
 Some useful args are
   * `precision` (e.g. 16 or 'bf16')
@@ -20,15 +20,15 @@ Some useful args are
 A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
 ## Logging
-As pre-defined, the run will create an output `run.log` in the main dir.
-For real runs the log should be moved to `bone_age/output/{run_name}/{version_number}/run.log`.
-The workaround to archive this is creating the according folder structure **before** running the script and setting an evironment variable called `LOG_DIR`:
+As pre-defined, the run will create an output `run.log` in the main dir. 
+For real runs the log should be moved to `bone_age/output/{run_name}/{version_number}/run.log`. 
+The workaround to archive this is creating the according folder structure **before** running the script and setting an environment variable called `LOG_DIR`:
 
 Hence, actual runs should be called like: 
 ``` bash
-$LOG_DIR="output/{run_name}/{version_number}/run.log" python train_model.py --model dbam-inceptionv3 --gpus 1 ...
+LOG_FILE="output/{run_name}/{version_number}/run.log" python train_model.py --model dbam_inceptionv3 --name {run_name} --gpus 1 ...
 ```
-
+Make sure that the `--name` parameter matches the name in the `LOG_FILE` param.
 
 ## Code formatting
 Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.
