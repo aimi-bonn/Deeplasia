@@ -36,6 +36,11 @@ class ModelProto(pl.LightningModule):
         epoch_size=2048,
         data_dir=None,
         mask_dir=None,
+        cache=False,
+        img_norm_method="zscore",
+        min_lr=1e-4,
+        rlrp_patience=5,
+        rlrp_factor=0.1,
         *args,
         **kwargs,
     ):
@@ -43,6 +48,7 @@ class ModelProto(pl.LightningModule):
         self.criterion = torch.nn.MSELoss()
         self.mad = torch.nn.L1Loss()
         self.start_time = -1
+        self.data_dir, self.mask_dir = data_dir, mask_dir
         logger.info(f"Setting up data from {data_dir}")
         self.example_input_array = self.get_example_input(kwargs)
         width, height = self.example_input_array[0].shape[2:4]
@@ -57,9 +63,14 @@ class ModelProto(pl.LightningModule):
             mask_dir=mask_dir,
             width=width,
             height=height,
+            img_norm_method=img_norm_method,
+            cache=cache,
         )
         self.y_mean, self.y_sd = self.data.mean, self.data.sd
         self.lr = lr
+        self.min_lr = min_lr
+        self.rlrp_factor = rlrp_factor
+        self.rlrp_patience = rlrp_patience
 
     def setup(self, stage):
         self.start_time = time()
@@ -88,11 +99,11 @@ class ModelProto(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=0.8,
-            patience=10,
-            min_lr=1e-4,
+            factor=self.rlrp_factor,
+            patience=self.rlrp_patience,
+            min_lr=self.min_lr,
             verbose=True,
-            cooldown=5,
+            cooldown=2,
         )
         return {
             "optimizer": optimizer,
@@ -372,6 +383,11 @@ def add_model_args(parent_parser):
         "--model", type=str, help="define architecture (e.g. dbam_efficientnet-b0"
     )
     parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--n_input_channels", type=int, default=1)
+    parser.add_argument("--pretrained", type=bool, default=False)
+    parser.add_argument("--act_type", type=str, default="mem_eff")
+
+    parser = parent_parser.add_argument_group("Data")
     parser.add_argument(
         "--data_dir",
         type=str,
@@ -379,12 +395,10 @@ def add_model_args(parent_parser):
         help="path to dir containing the rsna bone age data and annotation",
     )
     parser.add_argument("--mask_dirs", nargs="+", default=None)
-    parser.add_argument("--n_input_channels", type=int, default=1)
-    parser.add_argument("--pretrained", type=bool, default=False)
+    parser.add_argument("--cache_data", type=bool, default=False, help="cache images in RAM (Note: takes more than 10GB of RAM)")
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--epoch_size", type=int, default=0)
-    parser.add_argument("--act_type", type=str, default="mem_eff")
     return datasets.add_data_augm_args(parent_parser)
 
 
@@ -397,7 +411,7 @@ def from_argparse(args):
     if dense != "dbam":
         raise NotImplementedError
     proto_kwargs = {
-        "lr" : args.learning_rate,
+        "lr": args.learning_rate,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "epoch_size": args.epoch_size,
@@ -407,6 +421,8 @@ def from_argparse(args):
         "input_height": args.input_height,
         "input_width": args.input_width,
         "n_input_channels": args.n_input_channels,
+        "img_norm_method": args.img_norm_method,
+        "cache": args.cache_data
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS

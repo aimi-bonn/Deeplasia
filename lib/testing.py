@@ -6,9 +6,6 @@ import logging, logging.config
 logger = logging.getLogger(__name__)
 
 import os
-from argparse import ArgumentParser
-
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy import linalg as la
@@ -18,7 +15,7 @@ import pandas as pd
 import functools
 from torch.utils.data import DataLoader
 
-from lib import datasets, models
+from lib import datasets, models, constants
 
 
 def add_eval_args(parent_parser):
@@ -94,6 +91,14 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         logger.info(f"saving outputs to {output_dir}")
         for name, df in results.items():
             df.to_csv(os.path.join(output_dir, f"{name}_pred.csv"))
+            model_name = os.path.basename(os.path.dirname(output_dir))
+            os.makedirs(os.path.join(output_dir, "plots"), exist_ok=True)
+            save_correlation_plot(
+                df,
+                mad,
+                title=f"Performance of {model_name} on {name} set",
+                save_path=os.path.join(output_dir, "plots", f"{name}.png"),
+            )
     return log_dict
 
 
@@ -108,13 +113,17 @@ def predict_from_checkpoint(
     model = models.get_model_class(args).load_from_checkpoint(ckp_path)
     mean, sd = model.y_mean, model.y_sd
 
+    data_dir = args.data_dir if args.data_dir else model.data_dir
+    if not data_dir:
+        data_dir = constants.path_to_rsna_dir
+
     train_df = predict_bone_age(
         model,
         args,
         tta_rotations_train,
         tta_flip_train,
-        os.path.join(args.data_dir, "annotation_bone_age_training_data_set.csv"),
-        os.path.join(args.data_dir, "bone_age_training_data_set"),
+        os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
+        os.path.join(data_dir, "bone_age_training_data_set"),
         args.mask_dirs,
         mean,
         sd,
@@ -124,8 +133,8 @@ def predict_from_checkpoint(
         args,
         tta_rotations_test,
         tta_flip_test,
-        os.path.join(args.data_dir, "annotation_bone_age_validation_data_set.csv"),
-        os.path.join(args.data_dir, "bone_age_validation_data_set"),
+        os.path.join(data_dir, "annotation_bone_age_validation_data_set.csv"),
+        os.path.join(data_dir, "bone_age_validation_data_set"),
         args.mask_dirs,
         mean,
         sd,
@@ -135,8 +144,8 @@ def predict_from_checkpoint(
         args,
         tta_rotations_test,
         tta_flip_test,
-        os.path.join(args.data_dir, "annotation_bone_age_test_data_set.csv"),
-        os.path.join(args.data_dir, "bone_age_test_data_set"),
+        os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
+        os.path.join(data_dir, "bone_age_test_data_set"),
         args.mask_dirs,
         mean,
         sd,
@@ -153,7 +162,16 @@ def predict_from_checkpoint(
 
 
 def predict_bone_age(
-    model, args, rotations, flip_img, anno_csv, img_dir, mask_dir, mean, sd
+    model,
+    args,
+    rotations,
+    flip_img,
+    anno_csv,
+    img_dir,
+    mask_dir,
+    mean,
+    sd,
+    crop_to_mask=True,
 ) -> pd.DataFrame:
     l = []
     columns = ["filename", "male", "y"]
@@ -175,7 +193,7 @@ def predict_bone_age(
                 ),
                 bone_age_normalization=(mean, sd),
                 epoch_size=None,
-                crop_to_mask=False,
+                crop_to_mask=crop_to_mask and mask_dir,
             )
             pred = predict_from_loader(
                 model,
@@ -220,17 +238,18 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
     return image_names, males, ys, y_hats
 
 
-def evaluate_predictions(
+def save_correlation_plot(
     df,
-    y_col="boneage",
-    yhat_col="pred_age",
     error_func=None,
+    y_col="y",
+    yhat_col="y_hat",
     title="add Title",
     error_pos_x=0,
     error_pos_y=220,
-    y_label="Y",
-    yhat_label="Y_hat",
+    y_label="ground truth bone age (months)",
+    yhat_label="predicted bone age (months)",
     error_name="error",
+    save_path=None,
 ):
     """
     Quick overview over model performance.
@@ -238,6 +257,8 @@ def evaluate_predictions(
     Renders a scatter plot of y (real value) against yhat (predicted value) and prints the value of the defined error function.
 
     :param df: DataFrame containing y and yhat in specified columns
+    :param y_col: name of y column
+    :param yhat_col: name of y_hat column
     :param error_func: Error function
     :param title: title of the plot
     :param error_pos_x: x position where the performance metrics is placed
@@ -245,8 +266,9 @@ def evaluate_predictions(
     :param y_label: name for y (real value) as axis label
     :param yhat_label: name for yhat (predicted value) as axis label
     :param error_name: Name of the error function in the plot
+    :param save_path: path to save the model
     """
-    error = error_func(df[y_col], df[yhat_col])
+    error = error_func(df, yhat_key="y_hat")
 
     plt.figure()
     plt.scatter(df[y_col], df[yhat_col], alpha=0.3)
@@ -256,13 +278,11 @@ def evaluate_predictions(
     plt.plot(
         df[y_col],
         df[y_col],
-        "b-",
-        color="red",
+        "r-",
     )
-    plt.text(error_pos_x, error_pos_y, "MAD={:.2f}".format(error))
-    plt.show()
-    print("Exact " + error_name + ": {}".format(error))
-    return error
+    plt.text(error_pos_x, error_pos_y, f"{error_name}={error:.2f}")
+    if save_path:
+        plt.savefig(save_path)
 
 
 def calc_prediction_bias(y, yhat, verbose=True):

@@ -42,8 +42,11 @@ def main():
         auto_insert_metric_name=False,
         verbose=True,
     )
-    gpu_stats = pl.callbacks.GPUStatsMonitor(memory_utilization=True, gpu_utilization=True)
-    callbacks = [lr_monitor, ckp_callback, gpu_stats]
+    callbacks = [lr_monitor, ckp_callback]
+    if args.gpus:
+        callbacks += [
+            pl.callbacks.GPUStatsMonitor(memory_utilization=True, gpu_utilization=True)
+        ]
     model = from_argparse(args)
     trainer = pl.Trainer.from_argparse_args(
         args,

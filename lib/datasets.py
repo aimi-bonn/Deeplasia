@@ -33,6 +33,8 @@ class RsnaBoneAgeKaggle(Dataset):
         bone_age_normalization=None,
         epoch_size=None,
         crop_to_mask=False,
+        norm_method="zscore",
+        cache=False,
     ):
         """
         Create a RNSA Bone Age (kaggle competition) Dataset
@@ -45,6 +47,8 @@ class RsnaBoneAgeKaggle(Dataset):
         :param img_dir: base dir where images are located
         :param epoch_size: artificial size of an epoch (if None or 0 native size original size)
         :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
+        :param norm_method (str): Normalization method of the image, one of 'zscore' or 'interval' (scale to [0, 1]
+        :param cache (bool): Bool if images should be cached
         """
         anno_df = pd.read_csv(annotation_path)
         logger.info(f"Loading annotation data from {annotation_path}")
@@ -52,6 +56,7 @@ class RsnaBoneAgeKaggle(Dataset):
         self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
         self.img_dir = img_dir
         self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
+        self.norm_method = norm_method
         assert np.all(
             np.vectorize(lambda i: os.path.exists(os.path.join(img_dir, f"{i}.png")))(
                 self.ids
@@ -60,6 +65,7 @@ class RsnaBoneAgeKaggle(Dataset):
 
         self.mask_dir = mask_dir
         self._remove_if_mask_missing()
+        self.cache = ImageCache() if cache else False
 
         self.n_samples = (
             len(self.ids)
@@ -108,7 +114,7 @@ class RsnaBoneAgeKaggle(Dataset):
 
     def _open_image(self, index: int) -> (np.ndarray, str):
         img_path = os.path.join(self.img_dir, f"{self.ids[index]}.png")
-        image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+        image = self._cached_open_image(img_path, cv2.IMREAD_UNCHANGED)
         assert (
             np.sum(image) != 0
         ), f"image with index {index} is all black (sum is {np.sum(image)})"
@@ -116,6 +122,23 @@ class RsnaBoneAgeKaggle(Dataset):
             np.std(image) > 1e-5
         ), f"std of image with index {index} is close to zero ({np.std(image)})"
         return image, img_path
+
+    def _open_mask(self, index: int) -> np.ndarray:
+        """
+        search for a corresponding mask
+        """
+        for d in np.random.permutation(self.mask_dir):
+            img_path = os.path.join(d, f"{self.ids[index]}.png")
+            if os.path.exists(img_path):
+                break
+        mask = self._cached_open_image(img_path, cv2.IMREAD_GRAYSCALE)
+        return mask
+
+    def _cached_open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
+        if not self.cache:
+            return cv2.imread(path, mode)
+        else:
+            return self.cache.open_image(path, mode)
 
     def _crop_to_mask(self, image, mask):
         """
@@ -181,17 +204,6 @@ class RsnaBoneAgeKaggle(Dataset):
         self.male = self.male[np.where(avail_masks)]
         self.Y = self.Y[np.where(avail_masks)]
 
-    def _open_mask(self, index) -> np.ndarray:
-        """
-        search for a corresponding mask
-        """
-        for d in np.random.permutation(self.mask_dir):
-            img_path = os.path.join(d, f"{self.ids[index]}.png")
-            if os.path.exists(img_path):
-                break
-        mask = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-        return mask
-
     def get_norm(self):
         return self.mean_Y, self.sd_Y
 
@@ -199,12 +211,16 @@ class RsnaBoneAgeKaggle(Dataset):
         """Renormalize y to original value prior to zscore normalization"""
         return y * self.sd + self.mean
 
-    @staticmethod
-    def _normalize_image(img: torch.Tensor) -> torch.Tensor:
-        img = img.to(torch.float32)
-        m = img.mean()
-        sd = img.std()
-        img = (img - m) / sd
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        if self.norm_method == "zscore":
+            img = img.to(torch.float32)
+            m = img.mean()
+            sd = img.std()
+            img = (img - m) / sd
+        elif self.norm_method == "interval":
+            img = img.to(torch.float32)
+            img = img - img.min()
+            img = img / img.max()
         return img
 
     @staticmethod
@@ -276,6 +292,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         rotation_angle=0,
         flip=False,
         crop_to_mask=False,
+        img_norm_method="zscore",
+        cache=False,
     ):
         """
         Dataset class for RSNA bone age data
@@ -291,6 +309,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         :param rotation_angle (int): angle to rotate before data augmentation
         :param flip (bool): flip the image
         :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
+        :param img_norm_method (str): Normalization method of the image, one of 'zscore' or 'interval' (scale to [0, 1]
+        :param cache (bool): Bool if images should be cached (Note the RAM usage of >10GB)
         """
         super().__init__()
         self.batch_size = batch_size
@@ -317,6 +337,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             epoch_size=epoch_size,
             mask_dir=mask_dir,
             crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         self.mean, self.sd = self.train.get_norm()
         logger.info(
@@ -335,6 +357,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             data_augmentation=self.valid_augment,
             bone_age_normalization=(self.mean, self.sd),
             crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         logger.info(f"====== ====== ====== ====== ======")
         logger.info(f"====== Setting up test data ======")
@@ -345,6 +369,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             data_augmentation=self.test_augment,
             bone_age_normalization=(self.mean, self.sd),
             crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         # self._assert_data_integrity()
 
@@ -354,6 +380,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             drop_last=True,
+            shuffle=True,
         )
 
     def val_dataloader(self):
@@ -385,6 +412,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             mask_dir=args.mask_dirs,
             rotation_angle=rotation_angle,
             flip=flip,
+            img_norm_method=args.img_norm_method,
         )
 
     @staticmethod
@@ -405,6 +433,29 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         )
 
 
+class ImageCache:
+    def __init__(self):
+        """
+        class to cache images to avoid hard drive accesses to the cost of high RAM usage
+        """
+        self.cache = {}
+
+    def open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
+        """
+        Cache image if not available else return cached image (without hard drive access)
+
+        :param path: path to image
+        :param mode: cv2 imread mode
+        :return: image
+        """
+        if path in self.cache.keys():
+            return self.cache[path]
+        else:
+            img = cv2.imread(path, mode)
+            self.cache[path] = img
+            return img
+
+
 def add_data_augm_args(parent_parser):
     parent_parser.add_argument("--input_width", type=int, default=512)
     parent_parser.add_argument("--input_height", type=int, default=512)
@@ -414,6 +465,7 @@ def add_data_augm_args(parent_parser):
     parser.add_argument("--relative_scale", type=float, default=0.2)
     parser.add_argument("--shear_percent", type=int, default=1)
     parser.add_argument("--translate_percent", type=int, default=0.2)
+    parser.add_argument("--img_norm_method", type=str, default="zscore")
     return parent_parser
 
 

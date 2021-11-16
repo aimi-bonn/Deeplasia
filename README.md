@@ -26,7 +26,7 @@ The workaround to archive this is creating the according folder structure **befo
 
 Hence, actual runs should be called like: 
 ``` bash
-LOG_FILE="output/{run_name}/{version_number}/run.log" python train_model.py --model dbam_inceptionv3 --name {run_name} --gpus 1 ...
+LOG_FILE="output/{run_name}/{version_number}_run.log" python train_model.py --model dbam_inceptionv3 --name {run_name} --gpus 1 ...
 ```
 Make sure that the `--name` parameter matches the name in the `LOG_FILE` param.
 
