@@ -20,26 +20,28 @@ from lib import datasets, models, constants
 
 def add_eval_args(parent_parser):
     parser = parent_parser.add_argument_group("Evaluation")
-    parser.add_argument("--test_tta_rot", type=bool, default=True)
-    parser.add_argument("--test_tta_flip", type=bool, default=True)
-    parser.add_argument("--train_tta_rot", type=bool, default=False)
-    parser.add_argument("--train_tta_flip", type=bool, default=False)
-    parser.add_argument("--regress", type=bool, default=True)
+    parser.add_argument("--no_test_tta_rot", action="store_true")
+    parser.add_argument("--no_test_tta_flip", action="store_true")
+    parser.add_argument("--train_tta_rot", action="store_true")
+    parser.add_argument("--train_tta_flip", action="store_true")
+    parser.add_argument("--no_regression", action="store_true")
     return parent_parser
 
 
 def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
 
     logger.info("====== Testing model =====")
+    logger.info(args.no_test_tta_rot)
 
-    tta_rotations_test = [-10, -5, 0, 5, 10] if args.test_tta_rot else [0]
+    tta_rotations_test = [0] if args.no_test_tta_rot else [-10, -5, 0, 5, 10]
+    logger.info(tta_rotations_test)
     tta_rotations_train = [-10, -5, 0, 5, 10] if args.train_tta_rot else [0]
     logger.info("Starting inference")
     dfs = predict_from_checkpoint(
         ckp_path=ckp_path,
         args=args,
         tta_rotations_test=tta_rotations_test,
-        tta_flip_test=args.test_tta_flip,
+        tta_flip_test=(not args.no_test_tta_flip),
         tta_rotations_train=tta_rotations_train,
         tta_flip_train=args.train_tta_flip,
     )
@@ -61,7 +63,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         "hp/test_mad_reg_tta": -1,
     }
     logger.info("===== regress correct on raw images =====")
-    if args.regress:
+    if not args.no_regression:
         slope, intercept, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat-rot=0-no_flip"]
         )
@@ -73,7 +75,9 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         for name in ["validation", "test"]:
             log_dict[f"hp/{name}_mad_reg"] = mad(results[name], "y_hat_reg")
 
-    if args.regress and (args.test_tta_rot or args.test_tta_flip):
+    if not args.no_regression and (
+        not args.no_test_tta_rot or not args.no_test_tta_flip
+    ):
         slope, intercept, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat"]
         )
@@ -83,7 +87,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                 f"{name} mad (after regression and TTA): {mad(df, 'y_hat_reg_tta')}"
             )
         for name in ["validation", "test"]:
-            log_dict[f"hp/{name}_mad_reg_tta"] = mad(results[name], "y_hat_reg")
+            log_dict[f"hp/{name}_mad_reg_tta"] = mad(results[name], "y_hat_reg_tta")
 
     if output_dir:
         output_dir = os.path.join(output_dir, "predictions")
@@ -99,6 +103,21 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                 title=f"Performance of {model_name} on {name} set",
                 save_path=os.path.join(output_dir, "plots", f"{name}.png"),
             )
+            if "y_hat_reg" in df.columns:
+                save_correlation_plot(
+                    df,
+                    mad,
+                    title=f"Performance of {model_name} on {name} set",
+                    save_path=os.path.join(output_dir, "plots", f"{name}_reg.png"),
+                )
+            if "y_hat_reg_tta" in df.columns:
+                save_correlation_plot(
+                    df,
+                    mad,
+                    title=f"Performance of {model_name} on {name} set",
+                    save_path=os.path.join(output_dir, "plots", f"{name}_reg_tta.png"),
+                )
+
     return log_dict
 
 
@@ -234,7 +253,7 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
     ys = torch.cat(ys).squeeze().numpy() * sd + mean
     y_hats = torch.cat(y_hats).numpy() * sd + mean
     image_names = np.array([name for batch in image_names for name in batch])
-    males = np.array([male for batch in males for male in batch])
+    males = np.array([male.item() for batch in males for male in batch])
     return image_names, males, ys, y_hats
 
 
@@ -290,7 +309,7 @@ def calc_prediction_bias(y, yhat, verbose=True):
     slope, intercept, r_value, p_value, std_err = stats.linregress(yhat, yhat - y)
     if verbose:
         logger.info(
-            f"Linear bias prediction:\nslope: {slope:.4f}\nintercept: {intercept:.4f}\nr = {r_value:.4f}\np-value = {p_value:.1E}\nstd error = {std_err:.1E}"
+            f"Linear bias prediction:\tslope: {slope:.4f}\tintercept: {intercept:.4f}\tr = {r_value:.4f}\tp-value = {p_value:.1E}\tstd error = {std_err:.1E}"
         )
     return slope, intercept, r_value, p_value, std_err
 

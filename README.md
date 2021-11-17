@@ -19,7 +19,9 @@ Some useful args are
 
 A whole list is available [here](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html#trainer-class-api).
 
-## Logging
+## Tracking experiments
+
+### Logging
 As pre-defined, the run will create an output `run.log` in the main dir. 
 For real runs the log should be moved to `bone_age/output/{run_name}/{version_number}/run.log`. 
 The workaround to archive this is creating the according folder structure **before** running the script and setting an environment variable called `LOG_DIR`:
@@ -29,6 +31,18 @@ Hence, actual runs should be called like:
 LOG_FILE="output/{run_name}/{version_number}_run.log" python train_model.py --model dbam_inceptionv3 --name {run_name} --gpus 1 ...
 ```
 Make sure that the `--name` parameter matches the name in the `LOG_FILE` param.
+
+### Tensorboard logs
+
+To obtain output files including tensorboard logs while avoid needing to transfer the whole checkpoints, you can run
+``` bash
+rsync -av --exclude={"*.ckpt","*archiv*","*ipynb*"} xcat:bone2gene/bone_age/output/ bone2gene/bone_age/output/
+```
+and, subsequently,
+``` bash
+tensorboard --logdir bone2gene/bone_age/output
+```
+
 
 ## Code formatting
 Code is formatted using the [black](https://black.readthedocs.io/en/stable/) formatter.

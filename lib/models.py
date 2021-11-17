@@ -248,12 +248,17 @@ class InceptionDbam(ModelProto):
         self,
         n_channels=1,
         pretrained=False,
-        backbone=None,
+        backbone="inceptionv3",
         bn_momentum=0.01,
+        batch_size=32,
+        input_size=(512, 512),
         *args,
         **kwargs,
     ):
         super(InceptionDbam, self).__init__(
+            batch_size=batch_size,  # make explicit to log to tb
+            input_width=input_size[0],
+            input_height=input_size[1],
             *args,
             **kwargs,
         )
@@ -262,7 +267,9 @@ class InceptionDbam(ModelProto):
             torch.rand([1, 1]),
         )
         self.save_hyperparameters()
-        if backbone is None:
+        if (
+            backbone is None or backbone == "inceptionv3"
+        ):  # allow passing in existing backbone
             feature_extractor = torchvision.models.inception_v3(
                 pretrained=pretrained, aux_logits=False, init_weights=True
             )
@@ -315,30 +322,35 @@ class EfficientDbam(ModelProto):
         self,
         n_channels=1,
         pretrained=False,
-        act_type="mem_eff",
-        base="efficientnet-b0",
+        backbone="efficientnet-b0",
+        batch_size=32,
+        input_size=(512, 512),
         *args,
         **kwargs,
     ):
         super(EfficientDbam, self).__init__(
+            batch_size=batch_size,
+            input_width=input_size[0],
+            input_height=input_size[1],
             *args,
             **kwargs,
         )
         self.save_hyperparameters()
         assert (
-            base in EfficientNet.VALID_MODELS
-        ), f"Given base model type ({base}) is invalid"
+            backbone in EfficientNet.VALID_MODELS
+        ), f"Given base model type ({backbone}) is invalid"
         if pretrained:
             assert (
-                base != "efficientnet-l2"
+                backbone != "efficientnet-l2"
             ), "'efficientnet-l2' does not currently have pretrained weights"
             self.base = EfficientNet.EfficientNet.from_pretrained(
-                base, in_channels=n_channels
+                backbone, in_channels=n_channels
             )
         else:
             self.base = EfficientNet.EfficientNet.from_name(
-                base, in_channels=n_channels
+                backbone, in_channels=n_channels
             )
+        act_type = kwargs["act_type"] if "act_type" in kwargs.keys() else "mem_eff"
         self.act = (
             EfficientNet.Swish()
             if act_type != "mem_eff"
@@ -349,7 +361,7 @@ class EfficientDbam(ModelProto):
         self.fc_gender_in = nn.Linear(1, n_gender_dcs)
 
         self.dense_blocks = nn.ModuleList()
-        features_dim = EfficientNet.FEATURE_DIMS[base]  # 2nd dim of feature tensor
+        features_dim = EfficientNet.FEATURE_DIMS[backbone]  # 2nd dim of feature tensor
         channel_sizes_in = [features_dim + n_gender_dcs, 1024, 1024, 512, 512]
 
         for idx in range(len(channel_sizes_in) - 1):
@@ -384,7 +396,7 @@ def add_model_args(parent_parser):
     )
     parser.add_argument("--learning_rate", type=float, default=1e-3)
     parser.add_argument("--n_input_channels", type=int, default=1)
-    parser.add_argument("--pretrained", type=bool, default=False)
+    parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--act_type", type=str, default="mem_eff")
 
     parser = parent_parser.add_argument_group("Data")
@@ -403,6 +415,12 @@ def add_model_args(parent_parser):
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--epoch_size", type=int, default=0)
+
+    parser = parent_parser.add_argument_group("ReduceLROnPlateau")
+    parser.add_argument("--min_lr", type=float, default=1e-4)
+    parser.add_argument("--rlrp_patience", type=int, default=5)
+    parser.add_argument("--rlrp_factor", type=float, default=0.1)
+
     return datasets.add_data_augm_args(parent_parser)
 
 
@@ -422,11 +440,13 @@ def from_argparse(args):
         "train_augment": train_augment,
         "data_dir": args.data_dir,
         "mask_dir": args.mask_dirs,
-        "input_height": args.input_height,
-        "input_width": args.input_width,
+        "input_size": (args.input_width, args.input_height),
         "n_input_channels": args.n_input_channels,
         "img_norm_method": args.img_norm_method,
         "cache": args.cache_data,
+        "min_lr": args.min_lr,
+        "rlrp_patience": args.rlrp_patience,
+        "rlrp_factor": args.rlrp_factor,
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
@@ -434,7 +454,7 @@ def from_argparse(args):
             n_channels=args.n_input_channels,
             pretrained=args.pretrained,
             act_type="mem_eff",
-            base=backbone,
+            backbone=backbone,
             **proto_kwargs,
         )
     elif backbone == "inceptionv3":
