@@ -20,8 +20,6 @@ import pandas as pd
 sys.path.append("..")
 from lib import constants
 
-import logging
-
 # dir were to search for serialization obj, modified if needed
 pickle_obj_dir = constants.path_to_pickle_dir
 csv_df_dir = constants.path_to_csv_dir
@@ -83,10 +81,6 @@ LOG_CONFIG = {
         "handlers": ["console", "file"],
     },
 }
-
-
-import logging
-import sys
 
 
 def set_logger(level=""):

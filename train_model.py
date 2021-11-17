@@ -25,7 +25,7 @@ def main():
     logger = logging.getLogger()
     utils.log_system_info(logger)
 
-    logger.info(f"Command Line Args: {yaml.dump(vars(args))}")
+    logger.info(f"Command Line Args: /n{yaml.dump(vars(args))}")
 
     tb_logger = pl.loggers.tensorboard.TensorBoardLogger(
         save_dir="output/", name=args.name, log_graph=True, default_hp_metric=False
@@ -56,7 +56,8 @@ def main():
     )
     trainer.fit(model)
     logger.info(f"===== Training finished ======")
-    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}min")
+    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}min for {model.global_step} steps of training")
+    logger.info(f"Training speed: {(model.global_step / time() - model.start_time):.2f}steps/second")
 
     log_dict = testing.evaluate_bone_age_model(
         ckp_callback.best_model_path, args, tb_logger.log_dir

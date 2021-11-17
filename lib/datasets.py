@@ -18,12 +18,34 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class ImageCache:
+    def __init__(self):
+        """
+        class to cache images to avoid hard drive accesses to the cost of high RAM usage
+        """
+        self.cache = {}
+
+    def open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
+        """
+        Cache image if not available else return cached image (without hard drive access)
+
+        :param path: path to image
+        :param mode: cv2 imread mode
+        :return: image
+        """
+        if path in self.cache.keys():
+            return self.cache[path]
+        else:
+            img = cv2.imread(path, mode)
+            self.cache[path] = img
+            return img
+
+
 class RsnaBoneAgeKaggle(Dataset):
 
-    DEFAUL_IMAGE_RESOLUTION = (512, 512)
+    DEFAULT_IMAGE_RESOLUTION = (512, 512)
+    CACHE = ImageCache()
 
-
-class RsnaBoneAgeKaggle(Dataset):
     def __init__(
         self,
         annotation_path,
@@ -65,7 +87,7 @@ class RsnaBoneAgeKaggle(Dataset):
 
         self.mask_dir = mask_dir
         self._remove_if_mask_missing()
-        self.cache = ImageCache() if cache else False
+        self.use_cache = cache
 
         self.n_samples = (
             len(self.ids)
@@ -135,10 +157,10 @@ class RsnaBoneAgeKaggle(Dataset):
         return mask
 
     def _cached_open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
-        if not self.cache:
+        if not self.use_cache:
             return cv2.imread(path, mode)
         else:
-            return self.cache.open_image(path, mode)
+            return self.CACHE.open_image(path, mode)
 
     def _crop_to_mask(self, image, mask):
         """
@@ -274,7 +296,6 @@ class RsnaBoneAgeKaggle(Dataset):
         y = anno_df.iloc[:, 2].to_numpy(dtype=np.float32)
         assert len(ids) == len(male) == len(y)
         return ids, male, y
-
 
 class RsnaBoneAgeDataModule(pl.LightningDataModule):
     def __init__(
@@ -431,29 +452,6 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             ],
             p=1,
         )
-
-
-class ImageCache:
-    def __init__(self):
-        """
-        class to cache images to avoid hard drive accesses to the cost of high RAM usage
-        """
-        self.cache = {}
-
-    def open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
-        """
-        Cache image if not available else return cached image (without hard drive access)
-
-        :param path: path to image
-        :param mode: cv2 imread mode
-        :return: image
-        """
-        if path in self.cache.keys():
-            return self.cache[path]
-        else:
-            img = cv2.imread(path, mode)
-            self.cache[path] = img
-            return img
 
 
 def add_data_augm_args(parent_parser):

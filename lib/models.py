@@ -395,7 +395,11 @@ def add_model_args(parent_parser):
         help="path to dir containing the rsna bone age data and annotation",
     )
     parser.add_argument("--mask_dirs", nargs="+", default=None)
-    parser.add_argument("--cache_data", type=bool, default=False, help="cache images in RAM (Note: takes more than 10GB of RAM)")
+    parser.add_argument(
+        "--cache_data",
+        action="store_true",
+        help="cache images in RAM (Note: takes more than 10GB of RAM)",
+    )
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--epoch_size", type=int, default=0)
@@ -422,7 +426,7 @@ def from_argparse(args):
         "input_width": args.input_width,
         "n_input_channels": args.n_input_channels,
         "img_norm_method": args.img_norm_method,
-        "cache": args.cache_data
+        "cache": args.cache_data,
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
