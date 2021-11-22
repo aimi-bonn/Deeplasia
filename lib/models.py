@@ -226,8 +226,9 @@ class ModelProto(pl.LightningModule):
         n_channels = (
             kwargs["n_input_channels"] if "n_input_channels" in kwargs.keys() else 1
         )
-        width = kwargs["input_width"] if "input_width" in kwargs.keys() else 512
-        height = kwargs["input_height"] if "input_height" in kwargs.keys() else 512
+        width, height = (
+            kwargs["input_size"] if "input_size" in kwargs.keys() else (512, 512)
+        )
         return (
             torch.rand([1, n_channels, width, height]),
             torch.rand([1, 1]),
@@ -250,15 +251,10 @@ class InceptionDbam(ModelProto):
         pretrained=False,
         backbone="inceptionv3",
         bn_momentum=0.01,
-        batch_size=32,
-        input_size=(512, 512),
         *args,
         **kwargs,
     ):
         super(InceptionDbam, self).__init__(
-            batch_size=batch_size,  # make explicit to log to tb
-            input_width=input_size[0],
-            input_height=input_size[1],
             *args,
             **kwargs,
         )
@@ -323,15 +319,10 @@ class EfficientDbam(ModelProto):
         n_channels=1,
         pretrained=False,
         backbone="efficientnet-b0",
-        batch_size=32,
-        input_size=(512, 512),
         *args,
         **kwargs,
     ):
         super(EfficientDbam, self).__init__(
-            batch_size=batch_size,
-            input_width=input_size[0],
-            input_height=input_size[1],
             *args,
             **kwargs,
         )

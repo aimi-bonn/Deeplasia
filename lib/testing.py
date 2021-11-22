@@ -31,10 +31,8 @@ def add_eval_args(parent_parser):
 def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
 
     logger.info("====== Testing model =====")
-    logger.info(args.no_test_tta_rot)
 
     tta_rotations_test = [0] if args.no_test_tta_rot else [-10, -5, 0, 5, 10]
-    logger.info(tta_rotations_test)
     tta_rotations_train = [-10, -5, 0, 5, 10] if args.train_tta_rot else [0]
     logger.info("Starting inference")
     dfs = predict_from_checkpoint(
@@ -95,7 +93,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         logger.info(f"saving outputs to {output_dir}")
         for name, df in results.items():
             df.to_csv(os.path.join(output_dir, f"{name}_pred.csv"))
-            model_name = os.path.basename(os.path.dirname(output_dir))
+            model_name = os.path.basename(os.path.dirname(os.path.dirname(output_dir)))
             os.makedirs(os.path.join(output_dir, "plots"), exist_ok=True)
             save_correlation_plot(
                 df,
@@ -117,7 +115,6 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                     title=f"Performance of {model_name} on {name} set",
                     save_path=os.path.join(output_dir, "plots", f"{name}_reg_tta.png"),
                 )
-
     return log_dict
 
 
@@ -130,6 +127,7 @@ def predict_from_checkpoint(
     tta_flip_train=False,
 ) -> [pd.DataFrame]:
     model = models.get_model_class(args).load_from_checkpoint(ckp_path)
+    logger.info(f"Load model from {ckp_path}")
     mean, sd = model.y_mean, model.y_sd
 
     data_dir = args.data_dir if args.data_dir else model.data_dir
@@ -199,7 +197,17 @@ def predict_bone_age(
     def make_df(pred, yhat_name):
         colnames = ["filename", "male", "y", yhat_name]
         d = {name: arr for name, arr in zip(colnames, pred)}
-        return pd.DataFrame(d)
+        df = pd.DataFrame(d)
+        if np.any(np.isnan(df[yhat_name])):
+            logger.info(
+                f"encountered nan in images {np.where(np.isnan(df[yhat_name]))}, substituting with mean pred"
+            )
+            df[yhat_name] = np.where(
+                np.isnan(df[yhat_name]),
+                np.nanmean(df[yhat_name]).squeeze(),
+                df[yhat_name],
+            )
+        return df
 
     for rot_angle in rotations:
         for flip in flips:
