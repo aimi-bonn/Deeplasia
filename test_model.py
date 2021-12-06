@@ -25,6 +25,11 @@ def main():
         "--data_dir", type=str, default="../data/annotated/rsna_bone_age"
     )
     parser.add_argument("--mask_dirs", nargs="+", default=None)
+    parser.add_argument(
+        "--cache_data",
+        action="store_true",
+        help="cache images in RAM (Note: takes more than 10GB of RAM)",
+    )
     parser = testing.add_eval_args(parser)
     args = parser.parse_args()
 

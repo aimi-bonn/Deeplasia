@@ -216,11 +216,16 @@ def predict_bone_age(
                 img_dir=img_dir,
                 mask_dir=mask_dir,
                 data_augmentation=datasets.RsnaBoneAgeDataModule.get_inference_augmentation(
-                    args.input_width, args.input_height, rot_angle, (flip == "flip")
+                    rot_angle, (flip == "flip")
                 ),
                 bone_age_normalization=(mean, sd),
                 epoch_size=None,
                 crop_to_mask=crop_to_mask and mask_dir,
+                cache=args.cache_data
+                if hasattr(args, "cache_data")
+                and (len(rotations) > 1 or len(flips) > 1)
+                else False,
+                input_size=(args.input_height, args.input_width),
             )
             pred = predict_from_loader(
                 model,

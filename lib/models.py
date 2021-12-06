@@ -31,6 +31,7 @@ class ModelProto(pl.LightningModule):
         valid_augment=None,
         test_augment=None,
         lr=1e-3,
+        weight_decay=0,
         batch_size=32,
         num_workers=4,
         epoch_size=2048,
@@ -68,6 +69,7 @@ class ModelProto(pl.LightningModule):
         )
         self.y_mean, self.y_sd = self.data.mean, self.data.sd
         self.lr = lr
+        self.weight_decay = weight_decay
         self.min_lr = min_lr
         self.rlrp_factor = rlrp_factor
         self.rlrp_patience = rlrp_patience
@@ -94,7 +96,7 @@ class ModelProto(pl.LightningModule):
             lr=self.lr,
             betas=(0.9, 0.999),
             eps=1e-08,
-            weight_decay=0.0,
+            weight_decay=self.weight_decay,
         )
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -126,6 +128,13 @@ class ModelProto(pl.LightningModule):
                 "hp/test_mad_reg_tta": -1,
             },
         )
+
+        imgs = iter(self.train_dataloader()).next()["x"][:20]
+        for i in range(imgs.shape[0]):
+            imgs[i, 0, :, :] = imgs[i, 0, :, :] - imgs[i, 0, :, :].min()
+            imgs[i, 0, :, :] = imgs[i, 0, :, :] / imgs[i, 0, :, :].max()
+        grid = torchvision.utils.make_grid(imgs, 5)
+        self.logger.experiment.add_image("train_batch", grid, 0)
 
     def training_step(self, batch, batch_idx):
         loss, mad, yhat = self._shared_step(batch)
@@ -386,6 +395,7 @@ def add_model_args(parent_parser):
         "--model", type=str, help="define architecture (e.g. dbam_efficientnet-b0"
     )
     parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--n_input_channels", type=int, default=1)
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--act_type", type=str, default="mem_eff")
@@ -425,6 +435,7 @@ def from_argparse(args):
         raise NotImplementedError
     proto_kwargs = {
         "lr": args.learning_rate,
+        "weight_decay": args.weight_decay,
         "batch_size": args.batch_size,
         "num_workers": args.num_workers,
         "epoch_size": args.epoch_size,
