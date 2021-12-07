@@ -225,7 +225,7 @@ def predict_bone_age(
                 if hasattr(args, "cache_data")
                 and (len(rotations) > 1 or len(flips) > 1)
                 else False,
-                input_size=(args.input_height, args.input_width),
+                image_size=(args.input_height, args.input_width),
             )
             pred = predict_from_loader(
                 model,
