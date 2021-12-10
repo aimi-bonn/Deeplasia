@@ -12,6 +12,7 @@ import pytorch_lightning as pl
 from lib import constants
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
+from matplotlib import pyplot as plt
 
 import logging
 
@@ -120,7 +121,7 @@ class RsnaBoneAgeKaggle(Dataset):
         image, image_path = self._open_image(index)
         if self.mask_dir:
             mask = self._open_mask(index)
-            image = cv2.bitwise_and(image, image, mask)  # mask the hand
+            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
             image = self._crop_to_mask(image, mask)
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
@@ -288,14 +289,15 @@ class RsnaBoneAgeKaggle(Dataset):
     @staticmethod
     def _load_bone_age_anno(anno_df):
         """Assumes that the cols contain ids, gender, and ground truth bone age, respectively"""
-        ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int)
+        ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int32)
         male = anno_df.iloc[:, 1].to_numpy()
         if male[0] in ["M", "F"]:
             male = np.where(male == "M", 1, 0)
-        male = male.astype(np.bool)
         y = anno_df.iloc[:, 2].to_numpy(dtype=np.float32)
+        male = male.astype(np.float32)
         assert len(ids) == len(male) == len(y)
         return ids, male, y
+
 
 class RsnaBoneAgeDataModule(pl.LightningDataModule):
     def __init__(
@@ -448,6 +450,8 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                 A.augmentations.crops.transforms.RandomResizedCrop(
                     width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
                 ),
+                A.augmentations.transforms.ToFloat(max_value=2 ** 16, p=1),
+                A.augmentations.transforms.RandomGamma((80, 120), p=1),
                 ToTensorV2(),
             ],
             p=1,
@@ -464,6 +468,7 @@ def add_data_augm_args(parent_parser):
     parser.add_argument("--shear_percent", type=int, default=1)
     parser.add_argument("--translate_percent", type=int, default=0.2)
     parser.add_argument("--img_norm_method", type=str, default="zscore")
+    parser.add_argument("--contrast_gamma", type=float, default=20)
     return parent_parser
 
 
@@ -472,11 +477,16 @@ def setup_training_augmentation(args):
         [
             A.transforms.HorizontalFlip(p=args.flip_p),
             A.augmentations.geometric.transforms.Affine(
-                scale=(1 - args.relative_scale, 1 + args.relative_scale),
-                translate_percent=args.translate_percent,
+                scale=(1 - args.relative_scale, 1 / (1 - 0.2)),
+                translate_percent=(-args.translate_percent, args.translate_percent),
                 rotate=(-args.rotation_range, args.rotation_range),
-                shear=args.shear_percent,
+                shear=(-args.shear_percent, args.shear_percent),
                 p=1.0,
+            ),
+            A.augmentations.transforms.ToFloat(max_value=2 ** 16, always_apply=True),
+            A.augmentations.transforms.RandomGamma(
+                (100 - args.contrast_gamma, 100 + args.contrast_gamma),
+                p=1,
             ),
             A.augmentations.crops.transforms.RandomResizedCrop(
                 args.input_width, args.input_height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
@@ -489,21 +499,50 @@ def setup_training_augmentation(args):
 
 def main():
     from lib import constants
+    from matplotlib import pyplot as plt
 
-    print("Verifying all images in all RSNA bone age datasets")
+    train_augment = A.Compose(
+        [
+            A.transforms.HorizontalFlip(p=0.5),
+            A.augmentations.geometric.transforms.Affine(
+                scale=(1 - 0.2, 1 / (1 - 0.2)),
+                translate_percent=(-0.2, 0.2),
+                rotate=(-25, 25),
+                shear=(-5, 5),
+                p=1.0,
+            ),
+            A.augmentations.transforms.ToFloat(max_value=2 ** 16, p=1),
+            A.augmentations.transforms.RandomGamma((80, 120), p=1),
+            A.augmentations.crops.transforms.RandomResizedCrop(
+                512, 512, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+            ),
+            ToTensorV2(),
+        ],
+        p=1,
+    )
+    # train_augment = RsnaBoneAgeDataModule.get_inference_augmentation()
+    data_dir = "../data/annotated/rsna_bone_age/"
+    train = RsnaBoneAgeKaggle(
+        os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
+        os.path.join(data_dir, "bone_age_training_data_set"),
+        data_augmentation=train_augment,
+        bone_age_normalization=None,  # calculate renorm based on training set
+        mask_dir=[
+            "../data/masks/rsna_bone_age/tensormask",
+            "../data/masks/rsna_bone_age/unet",
+        ],
+        crop_to_mask=False,
+        norm_method="zscore",
+        cache=False,
+    )
+    from time import time
 
-    RsnaBoneAgeKaggle.verify_dataset(
-        constants.path_to_bone_age_training_anno,
-        constants.path_to_bone_age_training_dataset,
-    )
-    RsnaBoneAgeKaggle.verify_dataset(
-        constants.path_to_bone_age_validation_anno,
-        constants.path_to_bone_age_validation_dataset,
-    )
-    RsnaBoneAgeKaggle.verify_dataset(
-        constants.path_to_bone_age_test_anno,
-        constants.path_to_bone_age_test_dataset,
-    )
+    start = time()
+    for i in range(20):
+        img = train[np.random.randint(0, len(train))]["x"].numpy().squeeze()
+        # plt.imshow(img, cmap="gray")
+        # plt.show()
+    print(time() - start)
 
 
 if __name__ == "__main__":
