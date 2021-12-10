@@ -11,6 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
 from lib import constants
 import albumentations as A
+from albumentations.pytorch import ToTensorV2
 from matplotlib import pyplot as plt
 
 import logging
@@ -57,7 +58,6 @@ class RsnaBoneAgeKaggle(Dataset):
         crop_to_mask=False,
         norm_method="zscore",
         cache=False,
-        image_size=(512, 512),
     ):
         """
         Create a RNSA Bone Age (kaggle competition) Dataset
@@ -72,7 +72,6 @@ class RsnaBoneAgeKaggle(Dataset):
         :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
         :param norm_method (str): Normalization method of the image, one of 'zscore' or 'interval' (scale to [0, 1]
         :param cache (bool): Bool if images should be cached
-        :param input_size (tuple): image size as (height, width)
         """
         anno_df = pd.read_csv(annotation_path)
         logger.info(f"Loading annotation data from {annotation_path}")
@@ -114,15 +113,20 @@ class RsnaBoneAgeKaggle(Dataset):
             self.mean_Y = bone_age_normalization[0]
             self.sd_Y = bone_age_normalization[1]
 
-        self.resize = A.augmentations.crops.transforms.RandomResizedCrop(
-            *image_size, scale=(1.0, 1.0), ratio=(1.0, 1.0)
-        )
-
     def __getitem__(self, index):
         if torch.is_tensor(index):
             index = index.tolist()
 
-        image, image_path = self._process_image(index)
+        image, image_path = self._open_image(index)
+        if self.mask_dir:
+            mask = self._open_mask(index)
+            image = self._apply_mask(image, mask)
+            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
+            image = self._crop_to_mask(image, mask)
+        image = self.data_augmentation(image=image)["image"]
+        image = self._normalize_image(image)
+        if torch.isnan(image).any():
+            logger.warning(f"Created nan: {image_path}")
 
         male = torch.Tensor([self.male[index]])
 
@@ -131,34 +135,18 @@ class RsnaBoneAgeKaggle(Dataset):
         sample = {"x": image, "male": male, "y": y, "image_name": image_path}
         return sample
 
-    def _process_image(self, index):
-        """
-        open image, apply augmentations and, if applicable handle the mask usage
-        """
-        image, image_path = self._open_image(index)
-        d = {"image": image}
-        if self.mask_dir:
-            d["mask"] = self._open_mask(index)
-
-        aug = self.data_augmentation(**d)
-
-        image = aug["image"]
-        mask = aug["mask"] if self.mask_dir else None
-        if self.mask_dir:
-            image, mask = self._crop_to_mask(image=image, mask=mask)
-            image, mask = self.resize(image=image, mask=mask).values()
-        else:
-            image = self.resize(image=image)["image"]
-        image = self._mask_and_normalize_image(img=image, mask=mask)
-        image = torch.Tensor(np.expand_dims(image, axis=0))
-        return image, image_path
-
     def __len__(self):
         return self.n_samples
 
     def _open_image(self, index: int) -> (np.ndarray, str):
         img_path = os.path.join(self.img_dir, f"{self.ids[index]}.png")
         image = self._cached_open_image(img_path, cv2.IMREAD_UNCHANGED)
+        assert (
+            np.sum(image) != 0
+        ), f"image with index {index} is all black (sum is {np.sum(image)})"
+        assert (
+            np.std(image) > 1e-5
+        ), f"std of image with index {index} is close to zero ({np.std(image)})"
         return image, img_path
 
     def _open_mask(self, index: int) -> np.ndarray:
@@ -178,13 +166,22 @@ class RsnaBoneAgeKaggle(Dataset):
         else:
             return self.CACHE.open_image(path, mode)
 
+    def _apply_mask(self, image, mask) -> np.ndarray:
+        """
+        apply image and subtract min intensity (1st percentile) from the masked area
+        """
+        if self.norm_method != "interval":
+            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
+            m = np.percentile(cv2.bitwise_and(mask, image), 1)
+            image = cv2.subtract(image, m)  # no underflow
+        return image
+
     def _crop_to_mask(self, image, mask):
         """
         rotate and flip image, and crop to mask if specified
         """
         if not self.crop_to_mask:
-            return image, mask
-        assert image.shape[:2] == mask.shape[:2]
+            return image
 
         x = np.nonzero(np.max(mask, axis=0))
         xmin, xmax = (np.min(x), np.max(x) + 1)
@@ -208,21 +205,15 @@ class RsnaBoneAgeKaggle(Dataset):
         left = abs(min(0, xmin_new))
         right = max(0, xmax_new - mask.shape[1])
 
-        image_out = cv2.copyMakeBorder(
+        out = cv2.copyMakeBorder(
             image, top, bottom, left, right, borderType=cv2.BORDER_CONSTANT
-        )
-        mask_out = cv2.copyMakeBorder(
-            mask, top, bottom, left, right, borderType=cv2.BORDER_CONSTANT
         )
         ymax_new += top
         ymin_new += top
         xmax_new += left
         xmin_new += left
 
-        return (
-            image_out[ymin_new:ymax_new, xmin_new:xmax_new],
-            mask_out[ymin_new:ymax_new, xmin_new:xmax_new],
-        )
+        return out[ymin_new:ymax_new, xmin_new:xmax_new]
 
     def _remove_if_mask_missing(self) -> None:
         if not self.mask_dir:
@@ -256,22 +247,15 @@ class RsnaBoneAgeKaggle(Dataset):
         """Renormalize y to original value prior to zscore normalization"""
         return y * self.sd + self.mean
 
-    def _mask_and_normalize_image(
-        self, img: np.ndarray, mask: np.ndarray = None
-    ) -> np.ndarray:
-        img = cv2.bitwise_and(img, img, mask=mask)
-        ma = img if mask is None else np.ma.masked_array(img, mask=~mask)
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        img = img.to(torch.float32)
         if self.norm_method == "zscore":
-            m, sd = ma.mean(), ma.std()
+            m = img.mean()
+            sd = img.std()
+            img = (img - m) / sd
         elif self.norm_method == "interval":
-            m, sd = ma.min(), ma.max() - ma.min()
-        elif self.norm_method == "equalize":
-            raise NotImplementedError
-        img = img.astype(np.float32)
-        img -= m
-        img /= sd
-        if mask is None:
-            img = img + np.logical_not(mask) * np.percentile(img, 3)
+            img = img - img.min()
+            img = img / img.max()
         return img
 
     @staticmethod
@@ -317,12 +301,12 @@ class RsnaBoneAgeKaggle(Dataset):
     @staticmethod
     def _load_bone_age_anno(anno_df):
         """Assumes that the cols contain ids, gender, and ground truth bone age, respectively"""
-        ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int64)
+        ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int32)
         male = anno_df.iloc[:, 1].to_numpy()
         if male[0] in ["M", "F"]:
             male = np.where(male == "M", 1, 0)
-        male = male.astype(float)
         y = anno_df.iloc[:, 2].to_numpy(dtype=np.float32)
+        male = male.astype(np.float32)
         assert len(ids) == len(male) == len(y)
         return ids, male, y
 
@@ -370,7 +354,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         self.height = height
 
         default_aug = RsnaBoneAgeDataModule.get_inference_augmentation(
-            rotation_angle, flip
+            width, height, rotation_angle, flip
         )
         self.train_augment = train_augment if train_augment else default_aug
         self.valid_augment = valid_augment if valid_augment else default_aug
@@ -380,19 +364,16 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             data_dir = constants.path_to_rsna_dir
 
         logger.info(f"====== Setting up training data ======")
-        data_args = {
-            "crop_to_mask": crop_to_mask,
-            "norm_method": img_norm_method,
-            "cache": cache,
-            "mask_dir": mask_dir,
-            "image_size": (height, width),
-        }
         self.train = RsnaBoneAgeKaggle(
             os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
             os.path.join(data_dir, "bone_age_training_data_set"),
             data_augmentation=self.train_augment,
             bone_age_normalization=None,  # calculate renorm based on training set
-            **data_args,
+            epoch_size=epoch_size,
+            mask_dir=mask_dir,
+            crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         self.mean, self.sd = self.train.get_norm()
         logger.info(
@@ -407,18 +388,24 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                 "annotation_bone_age_validation_data_set.csv",
             ),
             os.path.join(data_dir, "bone_age_validation_data_set"),
+            mask_dir=mask_dir,
             data_augmentation=self.valid_augment,
             bone_age_normalization=(self.mean, self.sd),
-            **data_args,
+            crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         logger.info(f"====== ====== ====== ====== ======")
         logger.info(f"====== Setting up test data ======")
         self.test = RsnaBoneAgeKaggle(
             os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
             os.path.join(data_dir, "bone_age_test_data_set"),
+            mask_dir=mask_dir,
             data_augmentation=self.test_augment,
             bone_age_normalization=(self.mean, self.sd),
-            **data_args,
+            crop_to_mask=crop_to_mask,
+            norm_method=img_norm_method,
+            cache=cache,
         )
         # self._assert_data_integrity()
 
@@ -464,7 +451,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         )
 
     @staticmethod
-    def get_inference_augmentation(rotation_angle=0, flip=False):
+    def get_inference_augmentation(width=512, height=512, rotation_angle=0, flip=False):
         return A.Compose(
             [
                 A.transforms.HorizontalFlip(p=flip),
@@ -472,6 +459,10 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                     rotate=(rotation_angle, rotation_angle),
                     p=1.0,
                 ),
+                A.augmentations.crops.transforms.RandomResizedCrop(
+                    width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+                ),
+                ToTensorV2(),
             ],
             p=1,
         )
@@ -496,23 +487,26 @@ def setup_training_augmentation(args):
         [
             A.transforms.HorizontalFlip(p=args.flip_p),
             A.augmentations.geometric.transforms.Affine(
-                scale=(1 - args.relative_scale, 1 / (1 - 0.2)),
+                scale=(1 - args.relative_scale, 1 / (1 - args.relative_scale)),
                 translate_percent=(-args.translate_percent, args.translate_percent),
                 rotate=(-args.rotation_range, args.rotation_range),
                 shear=(-args.shear_percent, args.shear_percent),
                 p=1.0,
             ),
-            A.augmentations.transforms.ToFloat(max_value=2 ** 16, p=1),
-            A.augmentations.transforms.RandomGamma(
-                (100 - args.contrast_gamma, 100 + args.contrast_gamma), p=1
+            A.augmentations.crops.transforms.RandomResizedCrop(
+                args.input_width, args.input_height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
             ),
+            A.augmentations.transforms.RandomGamma(
+                (100 - args.contrast_gamma, 100 + args.contrast_gamma),
+                p=1,
+            ),
+            ToTensorV2(),
         ],
         p=1,
     )
 
 
 def main():
-    from lib import constants
     from matplotlib import pyplot as plt
 
     train_augment = A.Compose(
@@ -525,8 +519,18 @@ def main():
                 shear=(-5, 5),
                 p=1.0,
             ),
-            A.augmentations.transforms.ToFloat(max_value=2 ** 16, p=1),
-            A.augmentations.transforms.RandomGamma((80, 120), p=1),
+            A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=0.2),
+            A.augmentations.crops.transforms.RandomResizedCrop(
+                512, 512, scale=(1.0, 1.0), ratio=(1.0, 1.0)
+            ),
+            A.OneOf(
+                [
+                    A.augmentations.transforms.RandomGamma((80, 120), p=1),
+                    A.augmentations.transforms.CLAHE(p=1, clip_limit=3),
+                ],
+                p=1,
+            ),
+            ToTensorV2(),
         ],
         p=1,
     )
@@ -537,10 +541,10 @@ def main():
         os.path.join(data_dir, "bone_age_training_data_set"),
         data_augmentation=train_augment,
         bone_age_normalization=None,  # calculate renorm based on training set
-        # mask_dir=[
-        #     "../data/masks/rsna_bone_age/tensormask",
-        #     "../data/masks/rsna_bone_age/unet",
-        # ],
+        mask_dir=[
+            "../data/masks/rsna_bone_age/tensormask",
+            "../data/masks/rsna_bone_age/unet",
+        ],
         crop_to_mask=False,
         norm_method="zscore",
         cache=False,
@@ -549,7 +553,8 @@ def main():
 
     start = time()
     for i in range(20):
-        img = train[np.random.randint(0, len(train))]["x"].numpy().squeeze()
+        batch = train[5]
+        img = batch["x"].numpy().squeeze()
         plt.imshow(img, cmap="gray")
         plt.show()
     print(time() - start)
