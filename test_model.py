@@ -30,6 +30,12 @@ def main():
         action="store_true",
         help="cache images in RAM (Note: takes more than 10GB of RAM)",
     )
+    parser.add_argument(
+        "--img_norm_method",
+        type=str,
+        default=None,
+        help="if None model method will be used, use only to overwrite the model's settings",
+    )
     parser = testing.add_eval_args(parser)
     args = parser.parse_args()
 

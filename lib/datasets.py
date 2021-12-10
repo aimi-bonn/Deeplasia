@@ -121,10 +121,14 @@ class RsnaBoneAgeKaggle(Dataset):
         image, image_path = self._open_image(index)
         if self.mask_dir:
             mask = self._open_mask(index)
+            image = self._apply_mask(image, mask)
             image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
             image = self._crop_to_mask(image, mask)
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
+        if torch.isnan(image).any():
+            logger.warning(f"Created nan: {image_path}")
+
         male = torch.Tensor([self.male[index]])
 
         y = self.Y[index]
@@ -162,6 +166,16 @@ class RsnaBoneAgeKaggle(Dataset):
             return cv2.imread(path, mode)
         else:
             return self.CACHE.open_image(path, mode)
+
+    def _apply_mask(self, image, mask) -> np.ndarray:
+        """
+        apply image and subtract min intensity (1st percentile) from the masked area
+        """
+        if self.norm_method != "interval":
+            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
+            m = np.percentile(cv2.bitwise_and(mask, image), 1)
+            image = cv2.subtract(image, m)  # no underflow
+        return image
 
     def _crop_to_mask(self, image, mask):
         """
@@ -235,13 +249,12 @@ class RsnaBoneAgeKaggle(Dataset):
         return y * self.sd + self.mean
 
     def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        img = img.to(torch.float32)
         if self.norm_method == "zscore":
-            img = img.to(torch.float32)
             m = img.mean()
             sd = img.std()
             img = (img - m) / sd
         elif self.norm_method == "interval":
-            img = img.to(torch.float32)
             img = img - img.min()
             img = img / img.max()
         return img
@@ -450,8 +463,6 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
                 A.augmentations.crops.transforms.RandomResizedCrop(
                     width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
                 ),
-                A.augmentations.transforms.ToFloat(max_value=2 ** 16, p=1),
-                A.augmentations.transforms.RandomGamma((80, 120), p=1),
                 ToTensorV2(),
             ],
             p=1,
@@ -483,7 +494,6 @@ def setup_training_augmentation(args):
                 shear=(-args.shear_percent, args.shear_percent),
                 p=1.0,
             ),
-            A.augmentations.transforms.ToFloat(max_value=2 ** 16, always_apply=True),
             A.augmentations.transforms.RandomGamma(
                 (100 - args.contrast_gamma, 100 + args.contrast_gamma),
                 p=1,
@@ -540,8 +550,8 @@ def main():
     start = time()
     for i in range(20):
         img = train[np.random.randint(0, len(train))]["x"].numpy().squeeze()
-        # plt.imshow(img, cmap="gray")
-        # plt.show()
+        plt.imshow(img, cmap="gray")
+        plt.show()
     print(time() - start)
 
 

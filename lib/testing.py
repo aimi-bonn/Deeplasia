@@ -221,6 +221,9 @@ def predict_bone_age(
                 bone_age_normalization=(mean, sd),
                 epoch_size=None,
                 crop_to_mask=crop_to_mask and mask_dir,
+                norm_method=args.img_norm_method
+                if args.img_norm_method
+                else model.data.img_norm_method,
             )
             pred = predict_from_loader(
                 model,
@@ -250,15 +253,16 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
     males = []
     with torch.set_grad_enabled(False):
         for batch in data_loader:
-            y_hats.append(
+            y_hat = (
                 model(batch["x"].to(device_loc), batch["male"].to(device_loc))
                 .cpu()
-                .squeeze()
+                .squeeze(dim=1)
             )
-            ys.append(batch["y"])
+            y_hats.append(y_hat)
+            ys.append(batch["y"].squeeze(dim=1))
             image_names.append(batch["image_name"])
             males.append(batch["male"])
-    ys = torch.cat(ys).squeeze().numpy() * sd + mean
+    ys = torch.cat(ys).numpy() * sd + mean
     y_hats = torch.cat(y_hats).numpy() * sd + mean
     image_names = np.array([name for batch in image_names for name in batch])
     males = np.array([male.item() for batch in males for male in batch])

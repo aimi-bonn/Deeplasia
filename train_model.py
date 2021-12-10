@@ -56,8 +56,12 @@ def main():
     )
     trainer.fit(model)
     logger.info(f"===== Training finished ======")
-    logger.info(f"Training time : {(time() - model.start_time) / 60:.2f}min for {model.global_step} steps of training")
-    logger.info(f"Training speed: {(model.global_step / (time() - model.start_time)):.2f}steps/second")
+    logger.info(
+        f"Training time : {(time() - model.start_time) / 60:.2f}min for {model.global_step} steps of training"
+    )
+    logger.info(
+        f"Training speed: {(model.global_step / (time() - model.start_time)):.2f}steps/second"
+    )
 
     log_dict = testing.evaluate_bone_age_model(
         ckp_callback.best_model_path, args, tb_logger.log_dir

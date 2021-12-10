@@ -170,22 +170,22 @@ class ModelProto(pl.LightningModule):
             "y": batch["y"],
         }
 
-    # def validation_epoch_end(self, outputs):
-    #     epoch_loss, epoch_mad = self._summarize_epoch(outputs)
-    #     slope, intercept = self.calculate_prediction_bias(outputs)
-    #     log_dict = {
-    #         "Loss/val_loss_epoch": epoch_loss,
-    #         "Accuracy/val_mad": epoch_mad,
-    #         "Accuracy/val_mad_months": epoch_mad * self.y_sd,
-    #         "Pred_bias/intercept": intercept,
-    #         "Pred_bias/slope": slope,
-    #     }
-    #     self.logger.log_metrics(log_dict, step=self.current_epoch)
-    #     self.logger.experiment.add_scalars(
-    #         "Accuracy/MAD_months",
-    #         {"val": epoch_mad * self.y_sd},
-    #         global_step=self.current_epoch,
-    #     )
+    def validation_epoch_end(self, outputs):
+        epoch_loss, epoch_mad = self._summarize_epoch(outputs)
+        slope, intercept = self.calculate_prediction_bias(outputs)
+        log_dict = {
+            "Loss/val_loss_epoch": epoch_loss,
+            "Accuracy/val_mad": epoch_mad,
+            "Accuracy/val_mad_months": epoch_mad * self.y_sd,
+            "Pred_bias/intercept": intercept,
+            "Pred_bias/slope": slope,
+        }
+        self.logger.log_metrics(log_dict, step=self.current_epoch)
+        self.logger.experiment.add_scalars(
+            "Accuracy/MAD_months",
+            {"val": epoch_mad * self.y_sd},
+            global_step=self.current_epoch,
+        )
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
         return self(batch["x"], batch["male"])
