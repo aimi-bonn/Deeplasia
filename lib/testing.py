@@ -98,6 +98,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
             save_correlation_plot(
                 df,
                 mad,
+                yhat_col="y_hat-rot=0-no_flip",
                 title=f"Performance of {model_name} on {name} set",
                 save_path=os.path.join(output_dir, "plots", f"{name}.png"),
             )
@@ -105,6 +106,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                 save_correlation_plot(
                     df,
                     mad,
+                    yhat_col="y_hat_reg",
                     title=f"Performance of {model_name} on {name} set",
                     save_path=os.path.join(output_dir, "plots", f"{name}_reg.png"),
                 )
@@ -112,6 +114,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                 save_correlation_plot(
                     df,
                     mad,
+                    yhat_col="y_hat_reg_tta",
                     title=f"Performance of {model_name} on {name} set",
                     save_path=os.path.join(output_dir, "plots", f"{name}_reg_tta.png"),
                 )
@@ -209,6 +212,10 @@ def predict_bone_age(
             )
         return df
 
+    norm_method = (
+        args.img_norm_method if args.img_norm_method else model.data.img_norm_method
+    )
+    logger.info(f"normalizing images with: {norm_method}")
     for rot_angle in rotations:
         for flip in flips:
             dataset = datasets.RsnaBoneAgeKaggle(
@@ -221,9 +228,7 @@ def predict_bone_age(
                 bone_age_normalization=(mean, sd),
                 epoch_size=None,
                 crop_to_mask=crop_to_mask and mask_dir,
-                norm_method=args.img_norm_method
-                if args.img_norm_method
-                else model.data.img_norm_method,
+                norm_method=norm_method,
             )
             pred = predict_from_loader(
                 model,
