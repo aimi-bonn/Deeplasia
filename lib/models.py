@@ -246,18 +246,20 @@ class ModelProto(pl.LightningModule):
 
 class InceptionDbam(ModelProto):
     """
-    InceptionV3 based model featuring 4 dense layers for regression
+    InceptionV3 based model featuring a variable number of dense layers
 
     Args:
         n_channels: number of channels of the input image
         pretrained: used pretrained backbone model
         backbone: existing backbone model for faster instantiation
+        dense_layers: number of neurons in the dense layers
     """
 
     def __init__(
         self,
         n_channels=1,
         pretrained=False,
+        dense_layers=[1024, 1024, 512, 512],
         backbone="inceptionv3",
         bn_momentum=0.01,
         *args,
@@ -292,33 +294,32 @@ class InceptionDbam(ModelProto):
         for mod in list(self.features.modules()):
             if isinstance(mod, torch.nn.BatchNorm2d):
                 mod.momemtum = bn_momentum  # previously 0.1
-        self.dropout1 = nn.Dropout(p=0.2)
-        self.male_fc = nn.Linear(1, 32)
-        self.fc1 = nn.Linear(2048 + 32, 1024)
-        self.dropout2 = nn.Dropout(p=0.2)
-        self.fc2 = nn.Linear(1024, 1024)
-        self.dropout3 = nn.Dropout(p=0.2)
-        self.fc3 = nn.Linear(1024, 512)
-        self.dropout4 = nn.Dropout(p=0.2)
-        self.fc4 = nn.Linear(512, 512)
-        self.dropout5 = nn.Dropout(p=0.2)
-        self.out = nn.Linear(512, 1)
+
+        n_gender_dcs = 32
+        self.male_fc = nn.Linear(1, n_gender_dcs)
+        channel_sizes_in = [2048 + n_gender_dcs] + dense_layers
+
+        self.dense_blocks = nn.ModuleList()
+        for idx in range(len(channel_sizes_in) - 1):
+            self.dense_blocks.append(
+                nn.Linear(
+                    in_features=channel_sizes_in[idx],
+                    out_features=channel_sizes_in[idx + 1],
+                )
+            )
+        self.fc_boneage = nn.Linear(channel_sizes_in[-1], 1)
+        self.dropout = nn.Dropout(p=0.2)
 
     def forward(self, x, male):
         x = self.features(x)  # feature extraction
         x = torch.flatten(x, 1)  # flatten vector
-        x = self.dropout1(x)
+        x = self.dropout(x)
         male = F.relu(self.male_fc(male.view(-1, 1)))  # make sure male bit is tensor
         x = torch.cat((x, male), dim=1)
-        x = F.relu(self.fc1(x))
-        x = self.dropout2(x)
-        x = F.relu(self.fc2(x))
-        x = self.dropout3(x)
-        x = F.relu(self.fc3(x))
-        x = self.dropout4(x)
-        x = F.relu(self.fc4(x))
-        x = self.dropout5(x)
-        x = self.out(x)
+
+        for mod in self.dense_blocks:
+            x = F.relu(self.dropout(mod(x)))
+        x = self.fc_boneage(x)
         return x
 
 
@@ -328,6 +329,7 @@ class EfficientDbam(ModelProto):
         n_channels=1,
         pretrained=False,
         backbone="efficientnet-b0",
+        dense_layers=[1024, 1024, 512, 512],
         *args,
         **kwargs,
     ):
@@ -335,6 +337,15 @@ class EfficientDbam(ModelProto):
             *args,
             **kwargs,
         )
+        """
+        Efficientnet based bone age model featuring a variable number of dense layers
+
+        Args:
+            n_channels: number of channels of the input image
+            pretrained: used pretrained backbone model
+            backbone: existing backbone model for faster instantiation
+            dense_layers: number of neurons in the dense layers
+        """
         self.save_hyperparameters()
         assert (
             backbone in EfficientNet.VALID_MODELS
@@ -362,7 +373,7 @@ class EfficientDbam(ModelProto):
 
         self.dense_blocks = nn.ModuleList()
         features_dim = EfficientNet.FEATURE_DIMS[backbone]  # 2nd dim of feature tensor
-        channel_sizes_in = [features_dim + n_gender_dcs, 1024, 1024, 512, 512]
+        channel_sizes_in = [features_dim + n_gender_dcs] + dense_layers
 
         for idx in range(len(channel_sizes_in) - 1):
             self.dense_blocks.append(
@@ -371,7 +382,7 @@ class EfficientDbam(ModelProto):
                     out_features=channel_sizes_in[idx + 1],
                 )
             )
-        self.fc_boneage = nn.Linear(512, 1)
+        self.fc_boneage = nn.Linear(channel_sizes_in[-1], 1)
 
     def forward(self, x, male):
         x = self.base.extract_features(x, return_residual=False)
@@ -397,6 +408,7 @@ def add_model_args(parent_parser):
     parser.add_argument("--learning_rate", type=float, default=1e-3)
     parser.add_argument("--weight_decay", type=float, default=0)
     parser.add_argument("--n_input_channels", type=int, default=1)
+    parser.add_argument("--dense_layers", nargs="+", default=[1024, 1024, 512, 512])
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--act_type", type=str, default="mem_eff")
 
@@ -434,6 +446,9 @@ def from_argparse(args):
     if dense != "dbam":
         raise NotImplementedError
     proto_kwargs = {
+        "pretrained": args.pretrained,
+        "n_channel": args.n_input_channels,
+        "dense_layers": [int(x) for x in args.dense_layers],
         "lr": args.learning_rate,
         "weight_decay": args.weight_decay,
         "batch_size": args.batch_size,
@@ -453,16 +468,12 @@ def from_argparse(args):
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
         return EfficientDbam(
-            n_channels=args.n_input_channels,
-            pretrained=args.pretrained,
             act_type="mem_eff",
             backbone=backbone,
             **proto_kwargs,
         )
     elif backbone == "inceptionv3":
         return InceptionDbam(
-            n_channels=args.n_input_channels,
-            pretrained=args.pretrained,
             **proto_kwargs,
         )
     else:
