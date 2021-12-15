@@ -17,6 +17,7 @@ from matplotlib import pyplot as plt
 import logging
 
 logger = logging.getLogger(__name__)
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 class ImageCache:
@@ -479,6 +480,13 @@ def add_data_augm_args(parent_parser):
     parser.add_argument("--translate_percent", type=int, default=0.2)
     parser.add_argument("--img_norm_method", type=str, default="zscore")
     parser.add_argument("--contrast_gamma", type=float, default=20)
+    parser.add_argument("--sharpen_p", type=float, default=0)
+    parser.add_argument(
+        "--clae_p",
+        type=float,
+        default=0,
+        help="Note, that is chained as OneOf with RandomGamma with a p=0.5, so setting clae_p to 0.5 sets it to making clae and gamma with same prob.)",
+    )
     return parent_parser
 
 
@@ -493,11 +501,18 @@ def setup_training_augmentation(args):
                 shear=(-args.shear_percent, args.shear_percent),
                 p=1.0,
             ),
+            A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=args.sharpen_p),
             A.augmentations.crops.transforms.RandomResizedCrop(
                 args.input_width, args.input_height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
             ),
-            A.augmentations.transforms.RandomGamma(
-                (100 - args.contrast_gamma, 100 + args.contrast_gamma),
+            A.OneOf(
+                [
+                    A.augmentations.transforms.CLAHE(p=args.clae_p, clip_limit=3),
+                    A.augmentations.transforms.RandomGamma(
+                        (100 - args.contrast_gamma, 100 + args.contrast_gamma),
+                        p=0.5,
+                    ),
+                ],
                 p=1,
             ),
             ToTensorV2(),
