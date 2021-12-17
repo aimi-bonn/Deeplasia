@@ -60,8 +60,8 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         "hp/test_mad_reg": -1,
         "hp/test_mad_reg_tta": -1,
     }
-    logger.info("===== regress correct on raw images =====")
     if not args.no_regression:
+        logger.info("===== regress correct on raw images =====")
         slope, intercept, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat-rot=0-no_flip"]
         )
@@ -76,6 +76,7 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
     if not args.no_regression and (
         not args.no_test_tta_rot or not args.no_test_tta_flip
     ):
+        logger.info("===== regress correct on raw images and TTA =====")
         slope, intercept, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat"]
         )
@@ -191,7 +192,7 @@ def predict_bone_age(
     mask_dir,
     mean,
     sd,
-    crop_to_mask=True,
+    crop_to_mask=False,
 ) -> pd.DataFrame:
     l = []
     columns = ["filename", "male", "y"]
@@ -213,7 +214,7 @@ def predict_bone_age(
         return df
 
     norm_method = (
-        args.img_norm_method if args.img_norm_method else model.data.img_norm_method
+        args.img_norm_method if args.img_norm_method else model.data.train.norm_method
     )
     logger.info(f"normalizing images with: {norm_method}")
     for rot_angle in rotations:
@@ -304,7 +305,7 @@ def save_correlation_plot(
     :param error_name: Name of the error function in the plot
     :param save_path: path to save the model
     """
-    error = error_func(df, yhat_key="y_hat")
+    error = error_func(df, yhat_key=yhat_col)
 
     plt.figure()
     plt.scatter(df[y_col], df[yhat_col], alpha=0.3)
