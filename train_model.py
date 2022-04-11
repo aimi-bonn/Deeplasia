@@ -33,10 +33,10 @@ def main():
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="epoch")
     output_dir = tb_logger.log_dir + "/ckp/"  # use tb to define log dir
     ckp_callback = pl.callbacks.ModelCheckpoint(
-        monitor="Loss/val_loss",
+        monitor="Step-wise/val_mad" if args.age_sigma > 0 else "Step-wise/val_ROC",
         dirpath=output_dir,
-        filename="model-epoch_{epoch:03d}-val_loss={Loss/val_loss:.3f}",
-        save_top_k=3,
+        filename="best.ckpt",
+        save_top_k=1,
         mode="min",
         save_last=True,
         auto_insert_metric_name=False,
@@ -49,10 +49,7 @@ def main():
         ]
     model = from_argparse(args)
     trainer = pl.Trainer.from_argparse_args(
-        args,
-        callbacks=callbacks,
-        profiler="simple",
-        logger=tb_logger,
+        args, callbacks=callbacks, profiler="simple", logger=tb_logger,
     )
     trainer.fit(model)
     logger.info(f"===== Training finished ======")

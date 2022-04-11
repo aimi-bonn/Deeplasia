@@ -5,16 +5,21 @@ module for custom functions used for creating and training the model
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchmetrics
 import torchvision
 import torchvision.models
 import pytorch_lightning as pl
 from time import time
 import scipy
 from pytorch_lightning.utilities.types import EVAL_DATALOADERS, TRAIN_DATALOADERS
+
+import lib.utils
 from lib.effNet import EfficientNet
 
 from lib import datasets
 import logging
+from lib.modules.metrics import *
+from lib.modules.losses import *
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,9 @@ class ModelProto(pl.LightningModule):
         mask_dir=None,
         cache=False,
         img_norm_method="zscore",
+        age_sigma=1,
+        sex_sigma=0,
+        learnable_sigma=False,
         min_lr=1e-4,
         rlrp_patience=5,
         rlrp_factor=0.1,
@@ -46,8 +54,7 @@ class ModelProto(pl.LightningModule):
         **kwargs,
     ):
         super(ModelProto, self).__init__()  # might want to forward args and kwargs here
-        self.criterion = torch.nn.MSELoss()
-        self.mad = torch.nn.L1Loss()
+
         self.start_time = -1
         self.data_dir, self.mask_dir = data_dir, mask_dir
         logger.info(f"Setting up data from {data_dir}")
@@ -73,6 +80,42 @@ class ModelProto(pl.LightningModule):
         self.min_lr = min_lr
         self.rlrp_factor = rlrp_factor
         self.rlrp_patience = rlrp_patience
+
+        self.sex_sigma = sex_sigma
+        self.age_sigma = age_sigma
+        self.learnable_sigma = learnable_sigma
+
+        self.slope = 1
+        self.bias = 0  # TODO learnable param
+
+        self.age_loss = torch.nn.MSELoss()
+        self.sex_loss = torch.nn.BCEWithLogitsLoss()
+        self.mad = torch.nn.L1Loss()
+
+        sex_metrics = torchmetrics.MetricCollection(
+            [
+                torchmetrics.Accuracy(),
+                torchmetrics.AUROC(num_classes=None, compute_on_step=False,),
+                torchmetrics.F1Score(num_classes=None, compute_on_step=True),
+            ]
+        )
+        self.sex_metrics = {
+            "train": sex_metrics.clone(prefix="train_"),
+            "val": sex_metrics.clone(prefix="val_"),
+        }
+
+        age_metrics = torchmetrics.MetricCollection(  # TODO MAE in months
+            [
+                torchmetrics.MeanAbsoluteError(compute_on_step=False),
+                RescaledMAE(compute_on_step=False, rescale=self.y_sd),  # TODO debug
+                torchmetrics.PearsonCorrCoef(compute_on_step=False),
+                torchmetrics.MeanSquaredError(compute_on_step=False, squared=False),
+            ]
+        )
+        self.age_metrics = {
+            "train": age_metrics.clone(prefix="train_"),
+            "val": age_metrics.clone(prefix="val_"),
+        }
 
     def setup(self, stage):
         self.start_time = time()
@@ -111,7 +154,9 @@ class ModelProto(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "Loss/val_loss",
+                "monitor": "Step-wise/val_mad"
+                if self.age_sigma > 0
+                else "Step-wise/val_ROC",
                 "interval": "epoch",
             },
         }
@@ -137,57 +182,103 @@ class ModelProto(pl.LightningModule):
         self.logger.experiment.add_image("train_batch", grid, 0)
 
     def training_step(self, batch, batch_idx):
-        loss, mad, yhat = self._shared_step(batch)
-        self.log(
-            "Loss/train_loss_step", loss, on_step=True, prog_bar=False, logger=True
+        age_hat, sex_hat, loss, age_loss, sex_loss, _ = self._shared_step(
+            batch, "train"
         )
-        return {"loss": loss, "mad": mad, "n": batch["x"].shape[0]}
+        self.log("Loss/train_loss", loss, on_step=True, prog_bar=False, logger=True)
+        self.log("Loss/train_age_loss", age_loss, on_step=True)
+        self.log("Loss/train_sex_loss", sex_loss, on_step=True)
+        return {
+            "loss": loss,
+            "n": batch["x"].shape[0],
+            "age_hat": age_hat.detach(),
+            "age": batch["y"],
+        }
 
     def training_epoch_end(self, outputs):
-        epoch_loss, epoch_mad = self._summarize_epoch(outputs)
-        log_dict = {
-            "Loss/train_loss_epoch": epoch_loss,
-            "Accuracy/train_mad": epoch_mad,
-            "Accuracy/train_mad_months": epoch_mad * self.y_sd,
-        }
-        wall_time = time() - self.start_time
-        wall_time = round(wall_time / 60)
+        self._regression_plot(outputs, "Training Error")
+        slope, bias = self.calculate_prediction_bias(outputs)
+        log_dict = (
+            {
+                f"Metrics_Age/{k}": v
+                for k, v in self.age_metrics["train"].compute().items()
+            }
+            | {
+                f"Metrics_Sex/{k}": v
+                for k, v in self.sex_metrics["train"].compute().items()
+            }
+            | {
+                "Pred_bias/intercept_train": bias,
+                "Pred_bias/slope_train": slope,
+                "Loss/sex_sigma": self.sex_sigma,
+                "Loss/age_sigma": self.age_sigma,
+            }
+        )
         self.logger.log_metrics(log_dict, step=self.current_epoch)
+        self.age_metrics["val"].reset()
+        self.sex_metrics["val"].reset()
         self.logger.experiment.add_scalars(
-            "Accuracy/MAD_months",
-            {"train": epoch_mad * self.y_sd},
+            "Metrics_Age/MAD_months",
+            {"train": log_dict["Metrics_Age/train_RescaledMAE"]},
             global_step=self.current_epoch,
         )
 
     def validation_step(self, batch, batch_idx):
-        loss, mad, yhat = self._shared_step(batch)
-        self.log("Loss/val_loss", loss, on_epoch=True)
+        age_hat, sex_hat, loss, age_loss, sex_loss, mad = self._shared_step(
+            batch, "val"
+        )
+        self.log("Loss/val_loss", loss, on_epoch=True, prog_bar=False, logger=True)
+        self.log("Loss/val_age_loss", age_loss, on_epoch=True)
+        self.log("Loss/val_sex_loss", sex_loss, on_epoch=True)
         return {
-            "loss": loss,
             "mad": mad,
+            "loss": loss,
             "n": batch["x"].shape[0],
-            "y_hat": yhat,
-            "y": batch["y"],
+            "age_hat": age_hat.detach(),
+            "age": batch["y"],
         }
 
     def validation_epoch_end(self, outputs):
-        epoch_loss, epoch_mad = self._summarize_epoch(outputs)
-        slope, intercept = self.calculate_prediction_bias(outputs)
-        log_dict = {
-            "Loss/val_loss_epoch": epoch_loss,
-            "Accuracy/val_mad": epoch_mad,
-            "Accuracy/val_mad_months": epoch_mad * self.y_sd,
-            "Pred_bias/intercept": intercept,
-            "Pred_bias/slope": slope,
-        }
+        _, epoch_mad = self._summarize_epoch(outputs)  # deprecated
+        self._regression_plot(outputs, "Validation Error")
+        slope, bias = self.calculate_prediction_bias(outputs)
+        log_dict = (
+            {
+                f"Metrics_Age/{k}": v
+                for k, v in self.age_metrics["val"].compute().items()
+            }
+            | {
+                f"Metrics_Sex/{k}": v
+                for k, v in self.sex_metrics["val"].compute().items()
+            }
+            | {
+                "Metrics_Age/val_mad_own": epoch_mad,
+                "Pred_bias/intercept_val": bias,
+                "Pred_bias/slope_val": slope,
+            }
+        )
         self.logger.log_metrics(log_dict, step=self.current_epoch)
         self.logger.experiment.add_scalars(
-            "Accuracy/MAD_months",
-            {"val": epoch_mad * self.y_sd},
+            "Metrics_Age/MAD_months",
+            {"val": log_dict["Metrics_Age/val_RescaledMAE"]},
             global_step=self.current_epoch,
         )
+        self.age_metrics["val"].reset()
+        self.sex_metrics["val"].reset()
+        self.log("Step-wise/val_mad", log_dict["Metrics_Age/val_RescaledMAE"])
+        self.log("Step-wise/val_ROC", log_dict["Metrics_Sex/val_AUROC"])
+
+    def _regression_plot(self, outputs, title):
+        y_hat, y = self.retrieve_age_predictions(outputs)
+        y_hat = y_hat * self.y_sd + self.y_mean
+        y = y * self.y_sd + self.y_mean
+        if self.current_epoch % 10 == 0 or self.current_epoch in [0, 1, 2, 5]:
+            lib.utils.confusion_matrix_to_tb(
+                self.logger.experiment, self.current_epoch, y_hat, y, title
+            )
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
+        # TODO include models regression params and restore?
         return self(batch["x"], batch["male"])
 
     def test_step(self, batch, batch_idx):
@@ -196,39 +287,57 @@ class ModelProto(pl.LightningModule):
         loss = self.mad(y_hat, y)
         self.log("test_loss", loss)
 
-    def _shared_step(self, batch):
+    def _shared_step(self, batch, step_type="train"):
         x = batch["x"]
         male = batch["male"]
-        y = batch["y"]
-        y_hat = self.forward(x, male)
-        loss = self.criterion(y_hat, y)
-        mad = self.mad(y_hat, y).detach()
-        return loss, mad, y_hat
+        age = batch["y"]
+        age_hat, sex_hat = self.forward(x, male)
+        age_hat = age_hat * self.slope + self.bias  # TODO
+
+        age_loss = self.age_loss(age_hat, age)
+        sex_loss = self.sex_loss(sex_hat, male)
+        loss = sex_loss * self.sex_sigma + self.age_sigma * age_loss  # TODO
+        mad = self.mad(age_hat, age).detach()  # deprecated
+
+        self.sex_metrics[step_type].to(sex_hat.device)(sex_hat, male.to(int))
+        self.age_metrics[step_type].to(age_hat.device)(age_hat, age)
+
+        return age_hat, sex_hat, loss, age_loss, sex_loss, mad
+
+    @staticmethod
+    def retrieve_age_predictions(outputs):
+        ys, y_hats = [], []
+        for batch_dict in outputs:
+            ys.append(batch_dict["age"])
+            y_hats.append(batch_dict["age_hat"])
+        ys = torch.cat(ys).cpu().numpy().squeeze()
+        y_hats = torch.cat(y_hats).cpu().numpy().squeeze()
+        return y_hats, ys
 
     @staticmethod
     def calculate_prediction_bias(outputs):
         ys, y_hats = [], []
         for batch_dict in outputs:
-            ys.append(batch_dict["y"])
-            y_hats.append(batch_dict["y_hat"])
+            ys.append(batch_dict["age"])
+            y_hats.append(batch_dict["age_hat"])
         ys = torch.cat(ys).cpu().numpy().squeeze()
         y_hats = torch.cat(y_hats).cpu().numpy().squeeze()
-        slope, intercept, _, _, _ = scipy.stats.linregress(y_hats, y_hats - ys)
+        try:
+            slope, intercept, _, _, _ = scipy.stats.linregress(y_hats, y_hats - ys)
+        except:
+            slope, intercept = (1, 0)
         return slope, intercept
 
     @staticmethod
     def _summarize_epoch(outputs):
-        losses = []
         mads = []
         total_n = 0
         for batch_dict in outputs:
             n = batch_dict["n"]
-            losses.append(batch_dict["loss"] * n)
             mads.append(batch_dict["mad"] * n)
             total_n += n
-        epoch_loss = torch.stack(losses).sum() / total_n
         epoch_mad = torch.stack(mads).sum() / total_n
-        return epoch_loss, epoch_mad
+        return 0, epoch_mad
 
     @staticmethod
     def get_example_input(kwargs):
@@ -262,12 +371,12 @@ class InceptionDbam(ModelProto):
         dense_layers=[1024, 1024, 512, 512],
         backbone="inceptionv3",
         bn_momentum=0.01,
+        n_gender_dcs=32,
         *args,
         **kwargs,
     ):
         super(InceptionDbam, self).__init__(
-            *args,
-            **kwargs,
+            *args, **kwargs,
         )
         self.example_input_array = (
             torch.rand([1, n_channels, 512, 512]),
@@ -295,7 +404,6 @@ class InceptionDbam(ModelProto):
             if isinstance(mod, torch.nn.BatchNorm2d):
                 mod.momemtum = bn_momentum  # previously 0.1
 
-        n_gender_dcs = 32
         self.male_fc = nn.Linear(1, n_gender_dcs)
         channel_sizes_in = [2048 + n_gender_dcs] + dense_layers
 
@@ -308,6 +416,7 @@ class InceptionDbam(ModelProto):
                 )
             )
         self.fc_boneage = nn.Linear(channel_sizes_in[-1], 1)
+        self.fc_sex = nn.Linear(channel_sizes_in[-1], 1)
         self.dropout = nn.Dropout(p=0.2)
 
     def forward(self, x, male):
@@ -319,8 +428,9 @@ class InceptionDbam(ModelProto):
 
         for mod in self.dense_blocks:
             x = F.relu(self.dropout(mod(x)))
-        x = self.fc_boneage(x)
-        return x
+        age_hat = self.fc_boneage(x)
+        sex_hat = self.fc_sex(x)
+        return age_hat, sex_hat
 
 
 class EfficientDbam(ModelProto):
@@ -330,13 +440,10 @@ class EfficientDbam(ModelProto):
         pretrained=False,
         backbone="efficientnet-b0",
         dense_layers=[1024, 1024, 512, 512],
+        n_gender_dcs=32,
         *args,
         **kwargs,
     ):
-        super(EfficientDbam, self).__init__(
-            *args,
-            **kwargs,
-        )
         """
         Efficientnet based bone age model featuring a variable number of dense layers
 
@@ -346,6 +453,9 @@ class EfficientDbam(ModelProto):
             backbone: existing backbone model for faster instantiation
             dense_layers: number of neurons in the dense layers
         """
+        super(EfficientDbam, self).__init__(
+            *args, **kwargs,
+        )
         self.save_hyperparameters()
         assert (
             backbone in EfficientNet.VALID_MODELS
@@ -368,7 +478,6 @@ class EfficientDbam(ModelProto):
             else EfficientNet.MemoryEfficientSwish()
         )
         self.dropout = nn.Dropout(p=0.2)
-        n_gender_dcs = 32
         self.fc_gender_in = nn.Linear(1, n_gender_dcs)
 
         self.dense_blocks = nn.ModuleList()
@@ -383,10 +492,11 @@ class EfficientDbam(ModelProto):
                 )
             )
         self.fc_boneage = nn.Linear(channel_sizes_in[-1], 1)
+        self.fc_sex = nn.Linear(channel_sizes_in[-1], 1)
 
     def forward(self, x, male):
         x = self.base.extract_features(x, return_residual=False)
-        x = torch.mean(x, dim=(2, 3))  # agnostic of the 3th and 4th dim (h,w)
+        x = torch.mean(x, dim=(2, 3))  # agnostic of the 3th and 4th dim (h,w)  # 1x1
         x = self.dropout(x)
         x = self.act(x)
         x = x.view(x.size(0), -1)
@@ -396,8 +506,9 @@ class EfficientDbam(ModelProto):
 
         for mod in self.dense_blocks:
             x = self.act(self.dropout(mod(x)))
-        x = self.fc_boneage(x)
-        return x
+        age_hat = self.fc_boneage(x)
+        sex_hat = self.fc_sex(x)
+        return age_hat, sex_hat
 
 
 def add_model_args(parent_parser):
@@ -411,6 +522,10 @@ def add_model_args(parent_parser):
     parser.add_argument("--dense_layers", nargs="+", default=[1024, 1024, 512, 512])
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--act_type", type=str, default="mem_eff")
+    parser.add_argument("--n_gender_dcs", type=int, default=32)
+    parser.add_argument("--age_sigma", type=float, default=1)
+    parser.add_argument("--sex_sigma", type=float, default=0)
+    parser.add_argument("--learnable_sigma", action="store_true")
 
     parser = parent_parser.add_argument_group("Data")
     parser.add_argument(
@@ -449,6 +564,10 @@ def from_argparse(args):
         "pretrained": args.pretrained,
         "n_channel": args.n_input_channels,
         "dense_layers": [int(x) for x in args.dense_layers],
+        "n_gender_dcs": args.n_gender_dcs,
+        "age_sigma": args.age_sigma,
+        "sex_sigma": args.sex_sigma,
+        "learnable_sigma": args.learnable_sigma,
         "lr": args.learning_rate,
         "weight_decay": args.weight_decay,
         "batch_size": args.batch_size,
@@ -467,15 +586,9 @@ def from_argparse(args):
     }
     if "efficient" in backbone:
         assert backbone in EfficientNet.VALID_MODELS
-        return EfficientDbam(
-            act_type="mem_eff",
-            backbone=backbone,
-            **proto_kwargs,
-        )
+        return EfficientDbam(act_type="mem_eff", backbone=backbone, **proto_kwargs,)
     elif backbone == "inceptionv3":
-        return InceptionDbam(
-            **proto_kwargs,
-        )
+        return InceptionDbam(**proto_kwargs,)
     else:
         raise NotImplementedError
 

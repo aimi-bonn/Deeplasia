@@ -76,10 +76,7 @@ LOG_CONFIG = {
         }
     },
     # Just a standalone kwarg for the root logger
-    "root": {
-        "level": "INFO",
-        "handlers": ["console", "file"],
-    },
+    "root": {"level": "INFO", "handlers": ["console", "file"],},
 }
 
 
@@ -340,3 +337,32 @@ class SwishImplementation(torch.autograd.Function):
 class MemoryEfficientSwish(nn.Module):
     def forward(self, x):
         return SwishImplementation.apply(x)
+
+
+def confusion_matrix_to_tb(
+    writer: object,
+    step: int,
+    y_hat: np.ndarray,
+    y: np.ndarray,
+    title: str = "confusion_matrix",
+):
+    """
+    Visualization of confusion matrix
+    Source: https://martin-mundt.com/tensorboard-figures/ and https://github.com/lanpa/tensorboardX/blob/master/examples/demo_matplotlib.py
+    :param writer: TensorBoard SummaryWriter instance (LightningModule.logger.experiment).
+    :param step: Counter usually specifying steps/epochs/time.
+    :param y_hat: predictions
+    :param y: gt
+    :param title: title of the plot in tensorboard
+    """
+    # Create the figure
+    fig = plt.figure()
+    ax = plt.gca()
+
+    # Show the matrix and define a discretized color bar
+    ax.scatter(y, y_hat)
+    ax.plot(y, y, "-r")
+
+    ax.grid(False)
+    plt.tight_layout()
+    writer.add_figure(title, fig, step)
