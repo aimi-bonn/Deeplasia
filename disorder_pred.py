@@ -75,7 +75,7 @@ def get_best_model_path(name):
 
 def main():
     mean, sd = 127.31657409667969, 41.17934799194336
-    dataset = datasets.DisorderDataset(
+    dataset = datasets.HandDataset(
         annotation_path="../data_management/annotation_noKagg.csv",
         data_augmentation=None,
         img_dir="../data/annotated/",

@@ -1,0 +1,41 @@
+seed_everything: 42
+name: debug
+trainer:
+  gpus: 1
+  max_epochs: 300
+  min_epochs: null
+  max_time: null
+  precision: 16
+  profiler: null
+  enable_checkpointing: False
+  enable_model_summary: False
+  log_gpu_memory: null
+optimizer:
+  class_path: torch.optim.Adam
+  init_args:
+    lr: 1e-3
+    weight_decay: 5e-06
+lr_scheduler:
+  class_path: pytorch_lightning.utilities.cli.ReduceLROnPlateau
+  init_args:
+    monitor: Step-wise/val_mad
+    mode: min
+    factor: 0.1
+    patience: 10
+    min_lr: 1e-5
+    cooldown: 5
+    verbose: True
+early_stopping:
+  monitor: Step-wise/val_mad  # Also used for model checkpointing
+  min_delta: 0.0
+  patience: 50
+  verbose: true
+  mode: min
+  strict: true
+  check_finite: true
+  stopping_threshold: null
+  divergence_threshold: null
+  check_on_train_epoch_end: null
+lr_monitor:
+  logging_interval: epoch
+  log_momentum: false

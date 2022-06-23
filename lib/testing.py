@@ -3,6 +3,8 @@ module for custom functions used for evaluation and validation of trained models
 """
 import logging, logging.config
 
+from lib.models import BoneAgeModel
+
 logger = logging.getLogger(__name__)
 
 import os
@@ -28,15 +30,18 @@ def add_eval_args(parent_parser):
     return parent_parser
 
 
-def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
+def evaluate_bone_age_model(ckp_path, args, output_dir, trainer) -> dict:
 
     logger.info("====== Testing model =====")
+    trainer.model = BoneAgeModel.load_from_checkpoint(ckp_path)
+    model = trainer.model
+    logger.info(f"Load model from {ckp_path}")
 
     tta_rotations_test = [0] if args.no_test_tta_rot else [-10, -5, 0, 5, 10]
     tta_rotations_train = [-10, -5, 0, 5, 10] if args.train_tta_rot else [0]
     logger.info("Starting inference")
-    dfs = predict_from_checkpoint(
-        ckp_path=ckp_path,
+    dfs = predict(
+        model=trainer.model,
         args=args,
         tta_rotations_test=tta_rotations_test,
         tta_flip_test=(not args.no_test_tta_flip),
@@ -62,12 +67,12 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
     }
     if not args.no_regression:
         logger.info("===== regress correct on raw images =====")
-        slope, intercept, _, _, _ = calc_prediction_bias(
+        model.slope, model.bias, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat-rot=0-no_flip"]
         )
         for name, df in results.items():
             df["y_hat_reg"] = cor_prediction_bias(
-                df["y_hat-rot=0-no_flip"], slope, intercept
+                df["y_hat-rot=0-no_flip"], model.slope, model.bias
             )
             logger.info(f"{name} mad (after regression): {mad(df, 'y_hat_reg')}")
         for name in ["validation", "test"]:
@@ -77,11 +82,13 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
         not args.no_test_tta_rot or not args.no_test_tta_flip
     ):
         logger.info("===== regress correct on raw images and TTA =====")
-        slope, intercept, _, _, _ = calc_prediction_bias(
+        model.slope, model.bias, _, _, _ = calc_prediction_bias(
             results["train"]["y"], results["train"]["y_hat"]
         )
         for name, df in results.items():
-            df["y_hat_reg_tta"] = cor_prediction_bias(df["y_hat"], slope, intercept)
+            df["y_hat_reg_tta"] = cor_prediction_bias(
+                df["y_hat"], model.slope, model.bias
+            )
             logger.info(
                 f"{name} mad (after regression and TTA): {mad(df, 'y_hat_reg_tta')}"
             )
@@ -119,57 +126,22 @@ def evaluate_bone_age_model(ckp_path, args, output_dir) -> dict:
                     title=f"Performance of {model_name} on {name} set",
                     save_path=os.path.join(output_dir, "plots", f"{name}_reg_tta.png"),
                 )
+    trainer.save_checkpoint(ckp_path)
     return log_dict
 
 
-def predict_from_checkpoint(
-    ckp_path,
+def predict(
+    model,
     args,
     tta_rotations_test=[-10, -5, 0, 5, 10],
     tta_flip_test=True,
     tta_rotations_train=[0],
     tta_flip_train=False,
 ) -> [pd.DataFrame]:
-    model = models.get_model_class(args).load_from_checkpoint(ckp_path)
-    logger.info(f"Load model from {ckp_path}")
-    mean, sd = model.y_mean, model.y_sd
-
-    data_dir = args.data_dir if args.data_dir else model.data_dir
-    if not data_dir:
-        data_dir = constants.path_to_rsna_dir
-
+    val_df = predict_bone_age(model, args, tta_rotations_test, tta_flip_test, "val")
+    test_df = predict_bone_age(model, args, tta_rotations_test, tta_flip_test, "test")
     train_df = predict_bone_age(
-        model,
-        args,
-        tta_rotations_train,
-        tta_flip_train,
-        os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
-        os.path.join(data_dir, "bone_age_training_data_set"),
-        args.mask_dirs,
-        mean,
-        sd,
-    )
-    val_df = predict_bone_age(
-        model,
-        args,
-        tta_rotations_test,
-        tta_flip_test,
-        os.path.join(data_dir, "annotation_bone_age_validation_data_set.csv"),
-        os.path.join(data_dir, "bone_age_validation_data_set"),
-        args.mask_dirs,
-        mean,
-        sd,
-    )
-    test_df = predict_bone_age(
-        model,
-        args,
-        tta_rotations_test,
-        tta_flip_test,
-        os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
-        os.path.join(data_dir, "bone_age_test_data_set"),
-        args.mask_dirs,
-        mean,
-        sd,
+        model, args, tta_rotations_train, tta_flip_train, "train"
     )
 
     def vote(df):
@@ -183,16 +155,7 @@ def predict_from_checkpoint(
 
 
 def predict_bone_age(
-    model,
-    args,
-    rotations,
-    flip_img,
-    anno_csv,
-    img_dir,
-    mask_dir,
-    mean,
-    sd,
-    crop_to_mask=False,
+    model, args, rotations, flip_img, split_name="test",
 ) -> pd.DataFrame:
     l = []
     columns = ["filename", "male", "y"]
@@ -213,34 +176,31 @@ def predict_bone_age(
             )
         return df
 
-    norm_method = (
-        args.img_norm_method if args.img_norm_method else model.data.train.norm_method
-    )
+    norm_method = args.data.norm_method
     logger.info(f"normalizing images with: {norm_method}")
     for rot_angle in rotations:
         for flip in flips:
-            dataset = datasets.RsnaBoneAgeKaggle(
-                annotation_path=anno_csv,
-                img_dir=img_dir,
-                mask_dir=mask_dir,
-                data_augmentation=datasets.RsnaBoneAgeDataModule.get_inference_augmentation(
-                    args.input_width, args.input_height, rot_angle, (flip == "flip")
+            dataset = datasets.InferenceDataset(
+                data_augmentation=datasets.HandDatamodule.get_inference_augmentation(
+                    args.data.input_size[1],
+                    args.data.input_size[2],
+                    rot_angle,
+                    (flip == "flip"),
                 ),
-                bone_age_normalization=(mean, sd),
-                epoch_size=None,
-                crop_to_mask=crop_to_mask and mask_dir,
-                norm_method=norm_method,
+                split_name=split_name,
+                y_col="bone_age",
+                **args.data,
             )
             pred = predict_from_loader(
                 model,
                 DataLoader(
                     dataset,
-                    num_workers=args.num_workers,
-                    batch_size=args.batch_size,
+                    num_workers=args.data.num_workers,
+                    batch_size=args.data.test_batch_size,
                     drop_last=False,
                 ),
-                mean=mean,
-                sd=sd,
+                mean=model.age_mean,
+                sd=model.age_std,
             )
             l.append(make_df([*pred], f"y_hat-rot={rot_angle}-{flip}"))
     return functools.reduce(lambda left, right: pd.merge(left, right, on=columns), l)
@@ -260,7 +220,7 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
     with torch.set_grad_enabled(False):
         for batch in data_loader:
             y_hat = (
-                model(batch["x"].to(device_loc), batch["male"].to(device_loc))
+                model(batch["x"].to(device_loc), batch["male"].to(device_loc))[0]
                 .cpu()
                 .squeeze(dim=1)
             )
@@ -268,7 +228,7 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
             ys.append(batch["y"].squeeze(dim=1))
             image_names.append(batch["image_name"])
             males.append(batch["male"])
-    ys = torch.cat(ys).numpy() * sd + mean
+    ys = torch.cat(ys).numpy()
     y_hats = torch.cat(y_hats).numpy() * sd + mean
     image_names = np.array([name for batch in image_names for name in batch])
     males = np.array([male.item() for batch in males for male in batch])
@@ -313,9 +273,7 @@ def save_correlation_plot(
     plt.ylabel(yhat_label)
     plt.suptitle(title)
     plt.plot(
-        df[y_col],
-        df[y_col],
-        "r-",
+        df[y_col], df[y_col], "r-",
     )
     plt.text(error_pos_x, error_pos_y, f"{error_name}={error:.2f}")
     if save_path:

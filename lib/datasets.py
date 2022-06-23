@@ -2,6 +2,7 @@
 Module to manage datasets and loaders
 """
 import os
+import re
 
 import cv2
 import numpy as np
@@ -9,15 +10,18 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 import pytorch_lightning as pl
-from lib import constants
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
-from matplotlib import pyplot as plt
+import matplotlib.pyplot as plt
+import yaml
+
+from typing import Union, List
 
 import logging
 
 logger = logging.getLogger(__name__)
-torch.multiprocessing.set_sharing_strategy("file_system")
+
+# torch.multiprocessing.set_sharing_strategy("file_system")
 
 
 class ImageCache:
@@ -43,105 +47,100 @@ class ImageCache:
             return img
 
 
-class RsnaBoneAgeKaggle(Dataset):
+class HandDataset(Dataset):
 
-    DEFAULT_IMAGE_RESOLUTION = (512, 512)
     CACHE = ImageCache()
+
+    RELEVANT_ENTRIES = [
+        "image_ID",
+        "dir",
+        "chronological_age",
+        "sex",
+        "bone_age",
+    ]
 
     def __init__(
         self,
-        annotation_path,
-        img_dir,
-        mask_dir=None,
+        annotation_df: Union[str, pd.DataFrame] = "data-management/annotation.csv",
+        img_dir="../data/annotated/",
+        mask_dirs=["../data/masks/tensormask"],
+        age_norm=(0, 1),
         data_augmentation=None,
-        bone_age_normalization=None,
-        epoch_size=None,
-        crop_to_mask=False,
         norm_method="zscore",
-        cache=False,
+        mask_crop_size=-1,
+        use_cache=False,
+        y_col="disorder",
+        fourier=False,
     ):
-        """
-        Create a RNSA Bone Age (kaggle competition) Dataset
-
-        :param data_augmentation: defines conducted data augmentation
-            (instance of 'preprocessing.BoneAgeDataAugmentation')
-        :param bone_age_normalization: Tuple containing mean and sd for normalizing Y
-            (if None calculated from the own dataset, can be retrieved by 'get_norm()' method)
-        :param annotation_path: path to annotation csv file
-        :param img_dir: base dir where images are located
-        :param epoch_size: artificial size of an epoch (if None or 0 native size original size)
-        :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
-        :param norm_method (str): Normalization method of the image, one of 'zscore' or 'interval' (scale to [0, 1]
-        :param cache (bool): Bool if images should be cached
-        """
-        anno_df = pd.read_csv(annotation_path)
-        logger.info(f"Loading annotation data from {annotation_path}")
-        logger.info(f"Loading image data from {img_dir}")
-        self.ids, self.male, self.Y = self._load_bone_age_anno(anno_df)
+        self.fourier = fourier
+        self.mask_dir = mask_dirs
         self.img_dir = img_dir
         self.norm_method = norm_method
-        assert np.all(
-            np.vectorize(lambda i: os.path.exists(os.path.join(img_dir, f"{i}.png")))(
-                self.ids
+        self.mask_crop_size = mask_crop_size
+        self.y_col = y_col
+        self.anno_df = (
+            (
+                pd.read_csv(annotation_df)
+                if isinstance(annotation_df, str)
+                else annotation_df
             )
-        )  # check if all annotated images are really in the dir
-
-        self.mask_dir = mask_dir
-        self._remove_if_mask_missing()
-        self.use_cache = cache
-
-        self.n_samples = (
-            len(self.ids)
-            if not epoch_size or epoch_size > len(self.ids)
-            else epoch_size
+            .copy()[self.RELEVANT_ENTRIES]
+            .reset_index()
         )
-        logger.info(f"(Virtual) Epoch size : {self.n_samples}")
-
         self.data_augmentation = (
             data_augmentation
             if data_augmentation
-            else RsnaBoneAgeDataModule.get_inference_augmentation()
+            else HandDatamodule.get_inference_augmentation()
         )
-        logger.info(f"Augmentations used : {self.data_augmentation}")
+        self.use_cache = use_cache
 
-        self.crop_to_mask = crop_to_mask
-        self.crop_size = 1.3
+        self.mean_age, self.std_age = age_norm
+        self._remove_if_mask_missing()
 
-        if not bone_age_normalization:
-            self.mean_Y = np.mean(self.Y)
-            self.sd_Y = np.std(self.Y)
-        else:
-            self.mean_Y = bone_age_normalization[0]
-            self.sd_Y = bone_age_normalization[1]
+        self.anno_df["male"] = np.where(self.anno_df["sex"] == "M", 1, 0).astype(float)
+        self.anno_df["bone_age"] = (
+            self.anno_df["bone_age"] - self.mean_age
+        ) / self.std_age
 
     def __getitem__(self, index):
         if torch.is_tensor(index):
             index = index.tolist()
 
+        if isinstance(index, str):
+            index = self.anno_df.index[self.anno_df.image_ID == index].item()
+        image, image_path = self._preprocess_image(index)
+
+        male = torch.Tensor([self.anno_df.male.iloc[index]])
+        bone_age = torch.Tensor([self.anno_df.bone_age.iloc[index]])
+
+        sample = {
+            "x": image,
+            "male": male,
+            "bone_age": bone_age,
+            "image_name": image_path,
+        }
+        return sample
+
+    def _preprocess_image(self, index):
         image, image_path = self._open_image(index)
         if self.mask_dir:
             mask = self._open_mask(index)
             image = self._apply_mask(image, mask)
-            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
             image = self._crop_to_mask(image, mask)
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
+
         if torch.isnan(image).any():
             logger.warning(f"Created nan: {image_path}")
+        return image, image_path
 
-        male = torch.Tensor([self.male[index]])
-
-        y = self.Y[index]
-        y = torch.Tensor([(y - self.mean_Y) / self.sd_Y])
-        sample = {"x": image, "male": male, "y": y, "image_name": image_path}
-        return sample
-
-    def __len__(self):
-        return self.n_samples
-
-    def _open_image(self, index: int) -> (np.ndarray, str):
-        img_path = os.path.join(self.img_dir, f"{self.ids[index]}.png")
-        image = self._cached_open_image(img_path, cv2.IMREAD_UNCHANGED)
+    def _open_image(self, index: int, method=cv2.IMREAD_GRAYSCALE) -> (np.ndarray, str):
+        img_path = os.path.join(
+            self.img_dir,
+            self.anno_df["dir"].iloc[index],
+            self.anno_df["image_ID"].iloc[index],
+        )
+        image = self._cached_open_image(img_path, method)
         assert (
             np.sum(image) != 0
         ), f"image with index {index} is all black (sum is {np.sum(image)})"
@@ -155,17 +154,14 @@ class RsnaBoneAgeKaggle(Dataset):
         search for a corresponding mask
         """
         for d in np.random.permutation(self.mask_dir):
-            img_path = os.path.join(d, f"{self.ids[index]}.png")
+            img_path = os.path.join(
+                d, self.anno_df["dir"].iloc[index], self.anno_df["image_ID"].iloc[index]
+            )
             if os.path.exists(img_path):
                 break
         mask = self._cached_open_image(img_path, cv2.IMREAD_GRAYSCALE)
+        mask = (mask > mask.max() // 2).astype(np.uint8)
         return mask
-
-    def _cached_open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
-        if not self.use_cache:
-            return cv2.imread(path, mode)
-        else:
-            return self.CACHE.open_image(path, mode)
 
     def _apply_mask(self, image, mask) -> np.ndarray:
         """
@@ -177,11 +173,22 @@ class RsnaBoneAgeKaggle(Dataset):
             image = cv2.subtract(image, m)  # no underflow
         return image
 
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        img = img.to(torch.float32)
+        if self.norm_method == "zscore":
+            m = img.mean()
+            sd = img.std()
+            img = (img - m) / sd
+        elif self.norm_method == "interval":
+            img = img - img.min()
+            img = img / img.max()
+        return img
+
     def _crop_to_mask(self, image, mask):
         """
         rotate and flip image, and crop to mask if specified
         """
-        if not self.crop_to_mask:
+        if self.mask_crop_size <= 0:
             return image
 
         x = np.nonzero(np.max(mask, axis=0))
@@ -194,7 +201,7 @@ class RsnaBoneAgeKaggle(Dataset):
         y_center = ymin + height // 2
 
         size = max(height, width)
-        size = round(size * self.crop_size)
+        size = round(size * self.mask_crop_size)
 
         xmin_new = x_center - size // 2
         xmax_new = x_center + size // 2
@@ -216,204 +223,180 @@ class RsnaBoneAgeKaggle(Dataset):
 
         return out[ymin_new:ymax_new, xmin_new:xmax_new]
 
-    def _remove_if_mask_missing(self) -> None:
+    def _remove_if_mask_missing(self):
         if not self.mask_dir:
             logger.info("No masking - raw images used")
-            logger.info(f"Number of images : {len(self.ids)}")
+            logger.info(f"Number of images : {len(self.anno_df)}")
             return
         if not type(self.mask_dir) == list:
             self.mask_dir = [self.mask_dir]
         logger.info(f"Used masking dirs : {self.mask_dir}")
         avail_masks = []
         for d in self.mask_dir:
-            masks_in_dir = np.vectorize(
-                lambda i: os.path.exists(os.path.join(d, f"{i}.png"))
-            )(self.ids)
+            masks_in_dir = np.array(
+                [
+                    os.path.exists(os.path.join(d, row["dir"], row["image_ID"]))
+                    for _, row in self.anno_df.iterrows()
+                ]
+            )
             logger.info(
-                f"Number of masks available at {d} : {sum(masks_in_dir)} / {len(self.ids)}"
+                f"Number of masks available at {d} : {sum(masks_in_dir)} / {len(self.anno_df)}"
             )
             avail_masks.append(masks_in_dir)
         avail_masks = np.array(avail_masks).max(axis=0)
         logger.info(
-            f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.ids)}"
+            f"Number of masks available from all sources combined : {sum(avail_masks)} / {len(self.anno_df)}"
         )
-        self.ids = self.ids[np.where(avail_masks)]
-        self.male = self.male[np.where(avail_masks)]
-        self.Y = self.Y[np.where(avail_masks)]
+        self.anno_df = self.anno_df.iloc[avail_masks]
+
+    def _cached_open_image(self, path: str, mode=cv2.IMREAD_GRAYSCALE) -> np.ndarray:
+        if not self.use_cache:
+            return cv2.imread(os.path.abspath(path), mode)
+        else:
+            return self.CACHE.open_image(os.path.abspath(path), mode)
 
     def get_norm(self):
-        return self.mean_Y, self.sd_Y
+        return self.mean_age, self.sd_age
 
-    def renorm(self, y):
-        """Renormalize y to original value prior to zscore normalization"""
-        return y * self.sd + self.mean
-
-    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
-        img = img.to(torch.float32)
-        if self.norm_method == "zscore":
-            m = img.mean()
-            sd = img.std()
-            img = (img - m) / sd
-        elif self.norm_method == "interval":
-            img = img - img.min()
-            img = img / img.max()
-        return img
-
-    @staticmethod
-    def verify_dataset(anno_path, dataset_path):
-        """checks all images in the dataset for validity. Add more funcs if needed."""
-        from tqdm import tqdm
-        import matplotlib.pyplot as plt
-        from torchvision.transforms import transforms
-
-        dataset = RsnaBoneAgeKaggle(
-            anno_path,
-            dataset_path,
-        )
-
-        for index in tqdm(dataset.ids):
-            img_path = os.path.join(dataset.img_dir, f"{index}.png")
-            image = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
-            if np.sum(image) == 0:
-                print(f"image with index {index} is all black (sum is {np.sum(image)})")
-            if np.std(image) < 1e-5:
-                print(
-                    f"std of image with index {index} is close to zero ({np.std(image)})"
-                )
-            if np.sum(image) == 0 or np.std(image) < 1e-5:
-                plt.figure()
-                plt.imshow(image, cmap="gray")
-                plt.show()
-            tensor = transforms.ToTensor()(image)
-            if torch.sum(tensor) == 0:
-                print(
-                    f"image with index {index} is all black (sum is {torch.sum(tensor)})"
-                )
-            if torch.std(tensor) < 1e-5:
-                print(
-                    f"std of image with index {index} is close to zero ({torch.std(tensor)})"
-                )
-            if torch.sum(tensor) == 0 or torch.std(tensor) < 1e-5:
-                plt.figure()
-                plt.imshow(image.permute(1, 2, 0)[:, :, 0], cmap="gray")
-                plt.show()
-            # tensor = preprocessing.normalize_image("zscore", tensor)
-
-    @staticmethod
-    def _load_bone_age_anno(anno_df):
-        """Assumes that the cols contain ids, gender, and ground truth bone age, respectively"""
-        ids = anno_df.iloc[:, 0].to_numpy(dtype=np.int32)
-        male = anno_df.iloc[:, 1].to_numpy()
-        if male[0] in ["M", "F"]:
-            male = np.where(male == "M", 1, 0)
-        y = anno_df.iloc[:, 2].to_numpy(dtype=np.float32)
-        male = male.astype(np.float32)
-        assert len(ids) == len(male) == len(y)
-        return ids, male, y
+    def __len__(self):
+        return len(self.anno_df)
 
 
-class RsnaBoneAgeDataModule(pl.LightningDataModule):
+class HandDatamodule(pl.LightningDataModule):
     def __init__(
         self,
-        train_augment=None,
-        valid_augment=None,
-        test_augment=None,
-        width=512,
-        height=512,
-        batch_size=32,
-        num_workers=4,
-        data_dir=constants.path_to_rsna_dir,
-        mask_dir=None,
-        epoch_size=2048,
-        rotation_angle=0,
-        flip=False,
-        crop_to_mask=False,
-        img_norm_method="zscore",
-        cache=False,
+        annotation_path: str = "data-management/annotation.csv",
+        split_path: str = "data-management/splits/kaggle_only.csv",
+        split_column: str = "org_split",
+        img_dir: str = "../data/annotated/",
+        mask_dirs: List[str] = ["../data/masks/tensormask", "../data/masks/unet"],
+        train_batch_size: int = 16,
+        test_batch_size: int = 32,
+        num_workers: int = 8,
+        input_size: List[int] = [1, 512, 512],
+        norm_method: str = "zscore",
+        mask_crop_size: float = 1.15,
+        use_cache: bool = False,
+        rotation_range: int = 30,
+        translate_perc: float = 0.2,
+        flip_p: float = 0.5,
+        zoom_in: float = 0.2,
+        zoom_out: float = 0.2,
+        shear_angle: float = 10,
+        contrast_gamma: int = 30,
+        sharpen_p=0.2,
+        clae_p=0.5,
     ):
         """
-        Dataset class for RSNA bone age data
+        Datamodule representing train, val, and test set of the bone disorder data
 
-        :param train_augment: augmentation used for training (if None only resizing)
-        :param valid_augment: augmentation used for validation (if None only resizing)
-        :param test_augment: augmentation used for testing (if None only resizing)
-        :param batch_size: batch size
-        :param num_workers: number of threads for data loading and preprocessing
-        :param data_dir: parent dir containing the data (if None `../../data/annotated/rsna_bone_age/` is assumed) use a ramdisk or local storage for faster access speeds
-        :param mask_dir: dir or list of dirs containing masks for the presented images. If multiple masks are available for any given image, the mask is chosen randomly.
-        :param epoch_size: (virtual) size of an epoch. If None the true size is used.
-        :param rotation_angle (int): angle to rotate before data augmentation
-        :param flip (bool): flip the image
-        :param crop_to_mask (bool): assert that the whole mask of the hand is within the cropped image
-        :param img_norm_method (str): Normalization method of the image, one of 'zscore' or 'interval' (scale to [0, 1]
-        :param cache (bool): Bool if images should be cached (Note the RAM usage of >10GB)
+        :param annotation_path: path to annotation csv file
+        :param split_path: path specifying used split
+        :param split_column: the column of the split csv to use
+        :param img_dir: path to dir containing the raw images (as .png or similar, no direct DICOM support!)
+        :param mask_dirs: list of paths to directories containing masks (if None no masking is conducted)
+        :param train_batch_size: batch size during training
+        :param test_batch_size: batch size during validation and testing (can usually be set higher than train batch size)
+        :param num_workers: number of workers for the DataLoaders
+        :param input_size: resolution of the input image as [C, W, H] (only grayscale, ie C == 1 supported)
+        :param norm_method: normalization method for the images to use, one of 'zscore' or 'interval'
+        :param use_cache: use image RAM cache
+        :param rotation_range: range of rotation during training
+        :param translate_perc: translation of images during training
+        :param flip_p: probability of random horizontal flip during training
+        :param zoom_in: maximum factor to zoom in during training
+        :param zoom_out: maximum factor to zoom out during training
+        :param shear_angle: maximum angle for shearing during training
+        :param contrast_gamma: maximum percentage of gamma histogram transformation during training
         """
-        super().__init__()
-        self.batch_size = batch_size
+        self.save_hyperparameters(logger=False)
+
+        # For linking with model
+        self.norm_method = norm_method
+        self.train_batch_size = train_batch_size
+        self.masked_input = bool(mask_dirs)
+        self.input_size = input_size
+
         self.num_workers = num_workers
-        self.width = width
-        self.height = height
+        self.test_batch_size = test_batch_size
 
-        default_aug = RsnaBoneAgeDataModule.get_inference_augmentation(
-            width, height, rotation_angle, flip
+        train, val, test = self._handle_data_splits(
+            annotation_path, split_path, split_column,
         )
-        self.train_augment = train_augment if train_augment else default_aug
-        self.valid_augment = valid_augment if valid_augment else default_aug
-        self.test_augment = test_augment if test_augment else default_aug
+        self.img_dir = img_dir
+        self.mask_dirs = mask_dirs
 
-        if not data_dir:
-            data_dir = constants.path_to_rsna_dir
+        common_kwargs = {
+            "img_dir": img_dir,
+            "mask_dirs": mask_dirs,
+            "age_norm": (self.age_mean, self.age_std),
+            "norm_method": self.norm_method,
+            "use_cache": use_cache,
+            "mask_crop_size": mask_crop_size,
+        }
+        logger.info(f"{'='*10} Setting up train data {'='*10}")
 
-        logger.info(f"====== Setting up training data ======")
-        self.train = RsnaBoneAgeKaggle(
-            os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
-            os.path.join(data_dir, "bone_age_training_data_set"),
-            data_augmentation=self.train_augment,
-            bone_age_normalization=None,  # calculate renorm based on training set
-            epoch_size=epoch_size,
-            mask_dir=mask_dir,
-            crop_to_mask=crop_to_mask,
-            norm_method=img_norm_method,
-            cache=cache,
-        )
-        self.mean, self.sd = self.train.get_norm()
-        logger.info(
-            f"Parameters used for bone age normalization: mean = {self.mean} - sd = {self.sd}"
-        )
-        logger.info(f"====== ====== ====== ====== ====== ======")
-        logger.info(f"====== Setting up validation data ======")
-        logger.info(f"Setting up validation data")
-        self.validation = RsnaBoneAgeKaggle(
-            os.path.join(
-                data_dir,
-                "annotation_bone_age_validation_data_set.csv",
+        self.train = HandDataset(
+            annotation_df=train,
+            data_augmentation=self.get_train_augmentation(
+                input_size=input_size,
+                rotation_range=rotation_range,
+                translate_perc=translate_perc,
+                flip_p=flip_p,
+                zoom_in=zoom_in,
+                zoom_out=zoom_out,
+                shear_percent=shear_angle,
+                contrast_gamma=contrast_gamma,
+                sharpen_p=sharpen_p,
+                clae_p=clae_p,
             ),
-            os.path.join(data_dir, "bone_age_validation_data_set"),
-            mask_dir=mask_dir,
-            data_augmentation=self.valid_augment,
-            bone_age_normalization=(self.mean, self.sd),
-            crop_to_mask=crop_to_mask,
-            norm_method=img_norm_method,
-            cache=cache,
+            **common_kwargs,
         )
-        logger.info(f"====== ====== ====== ====== ======")
-        logger.info(f"====== Setting up test data ======")
-        self.test = RsnaBoneAgeKaggle(
-            os.path.join(data_dir, "annotation_bone_age_test_data_set.csv"),
-            os.path.join(data_dir, "bone_age_test_data_set"),
-            mask_dir=mask_dir,
-            data_augmentation=self.test_augment,
-            bone_age_normalization=(self.mean, self.sd),
-            crop_to_mask=crop_to_mask,
-            norm_method=img_norm_method,
-            cache=cache,
+        logger.info(f"{'='*10} Setting up validation data {'='*10}")
+        self.validation = HandDataset(
+            annotation_df=val,
+            data_augmentation=self.get_inference_augmentation(
+                input_size[1], input_size[2]
+            ),
+            **common_kwargs,
         )
-        # self._assert_data_integrity()
+        logger.info(f"{'='*10} Setting up test data {'='*10}")
+        self.test = HandDataset(
+            annotation_df=test,
+            data_augmentation=self.get_inference_augmentation(
+                input_size[1], input_size[2]
+            ),
+            **common_kwargs,
+        )
+
+    @staticmethod
+    def from_config(config, data_dir="../data/", **kwargs):
+        if isinstance(config, str):
+            if config.split(".")[-1] == "ckpt":
+                config = re.sub(r"ckp/.*\.ckpt", "config.yaml", config)
+            logger.info(f"restoring dataset from {config}")
+            with open(config) as f:
+                config = yaml.load(f, Loader=yaml.FullLoader)
+        if "data" in config.keys():
+            config = config["data"]
+        if data_dir:
+            config["img_dir"] = re.sub(".*/data/", data_dir, config["img_dir"])
+            config["mask_dirs"] = [
+                re.sub(".*/data/", data_dir, x) for x in config["mask_dirs"]
+            ]
+        for k, v in kwargs.items():
+            if k in config.keys():
+                config[k] = v
+        return HandDatamodule(**config)
+
+    def prepare_data_per_node(self):
+        """useless, but required for the CLI"""
+        pass
 
     def train_dataloader(self):
         return DataLoader(
             self.train,
-            batch_size=self.batch_size,
+            batch_size=self.train_batch_size,
             num_workers=self.num_workers,
             drop_last=True,
             shuffle=True,
@@ -421,34 +404,90 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         return DataLoader(
-            self.validation, batch_size=self.batch_size, num_workers=self.num_workers
+            self.validation,
+            batch_size=self.test_batch_size,
+            num_workers=self.num_workers,
         )
 
     def test_dataloader(self):
         return DataLoader(
-            self.test, batch_size=self.batch_size, num_workers=self.num_workers
+            self.test, batch_size=self.test_batch_size, num_workers=self.num_workers
         )
 
-    def _assert_data_integrity(self):
-        """
-        Check if all data is available at the configured source
-        """
-        assert len(self.train.ids) == 12610
-        assert len(self.validation.ids) == 1425
-        assert len(self.test.ids) == 200
+    def predict_dataloader(self):
+        return {
+            "test": self.test_dataloader(),
+            "val": self.val_dataloader(),
+            "train": self.train_dataloader(),
+        }
+
+    def _handle_data_splits(
+        self, annotation_path, split_path, split_column,
+    ):
+        df = pd.read_csv(annotation_path)
+        split = pd.read_csv(split_path)
+
+        df = df.merge(
+            split[["patient_ID", "dir", split_column]],
+            on=["patient_ID", "dir"],
+            how="inner",
+        )
+
+        train = df.loc[df[split_column] == "train"]
+        self.age_mean = train["bone_age"].mean()
+        self.age_std = train["bone_age"].std()
+        val = df.loc[df[split_column] == "val"]
+        test = df.loc[df[split_column] == "test"]
+        # TODO validate that all images are present
+        logger.info(f"found {len(train)} train images")
+        logger.info(f"found {len(val)} val images")
+        logger.info(f"found {len(test)} test images")
+
+        return train, val, test
 
     @staticmethod
-    def create_inference_module_from_args(args, rotation_angle=0, flip=False):
-        return RsnaBoneAgeDataModule(
-            width=args.input_width,
-            height=args.input_height,
-            batch_size=args.batch_size,  # likely this could be higher
-            num_workers=args.num_workers,
-            data_dir=args.data_dir,
-            mask_dir=args.mask_dirs,
-            rotation_angle=rotation_angle,
-            flip=flip,
-            img_norm_method=args.img_norm_method,
+    def get_train_augmentation(
+        input_size=(1, 512, 512),
+        rotation_range=30.0,
+        translate_perc=0.2,
+        flip_p=0.5,
+        zoom_in=0.2,
+        zoom_out=0.2,
+        shear_percent=10.0,
+        contrast_gamma=30.0,
+        sharpen_p=0.2,
+        clae_p=0.5,
+    ):
+        return A.Compose(
+            [
+                A.HorizontalFlip(p=flip_p),
+                A.Affine(
+                    scale=(1 - zoom_in, 1 / (1 - zoom_out)),
+                    translate_percent={
+                        # allow for independent selection in each direction
+                        "x": (-translate_perc, translate_perc),
+                        "y": (-translate_perc, translate_perc),
+                    },
+                    rotate=(-rotation_range, rotation_range),
+                    shear=(-shear_percent, shear_percent),
+                    p=1.0,
+                ),
+                A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=sharpen_p),
+                A.RandomResizedCrop(
+                    input_size[1], input_size[2], scale=(1.0, 1.0), ratio=(1.0, 1.0),
+                ),
+                A.OneOf(
+                    [
+                        A.augmentations.transforms.CLAHE(p=clae_p, clip_limit=3),
+                        A.augmentations.transforms.RandomGamma(
+                            (100 - contrast_gamma, 100 + contrast_gamma), p=0.5,
+                        ),
+                    ],
+                    p=1,
+                ),
+                ToTensorV2(),
+            ],
+            p=1,
         )
 
     @staticmethod
@@ -457,8 +496,7 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
             [
                 A.transforms.HorizontalFlip(p=flip),
                 A.augmentations.geometric.transforms.Affine(
-                    rotate=(rotation_angle, rotation_angle),
-                    p=1.0,
+                    rotate=(rotation_angle, rotation_angle), p=1.0,
                 ),
                 A.augmentations.crops.transforms.RandomResizedCrop(
                     width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
@@ -469,111 +507,92 @@ class RsnaBoneAgeDataModule(pl.LightningDataModule):
         )
 
 
-def add_data_augm_args(parent_parser):
-    parent_parser.add_argument("--input_width", type=int, default=512)
-    parent_parser.add_argument("--input_height", type=int, default=512)
-    parser = parent_parser.add_argument_group("Data_Augmentation")
-    parser.add_argument("--flip_p", type=float, default=0.5)
-    parser.add_argument("--rotation_range", type=int, default=20)
-    parser.add_argument("--relative_scale", type=float, default=0.2)
-    parser.add_argument("--shear_percent", type=int, default=1)
-    parser.add_argument("--translate_percent", type=int, default=0.2)
-    parser.add_argument("--img_norm_method", type=str, default="zscore")
-    parser.add_argument("--contrast_gamma", type=float, default=20)
-    parser.add_argument("--sharpen_p", type=float, default=0)
-    parser.add_argument(
-        "--clae_p",
-        type=float,
-        default=0,
-        help="Note, that is chained as OneOf with RandomGamma with a p=0.5, so setting clae_p to 0.5 sets it to making clae and gamma with same prob.)",
-    )
-    return parent_parser
+class InferenceDataset(HandDataset):
 
+    RELEVANT_ENTRIES = [
+        "image_ID",
+        "dir",
+        "sex",
+    ]
 
-def setup_training_augmentation(args):
-    return A.Compose(
-        [
-            A.transforms.HorizontalFlip(p=args.flip_p),
-            A.augmentations.geometric.transforms.Affine(
-                scale=(1 - args.relative_scale, 1 / (1 - args.relative_scale)),
-                translate_percent=(-args.translate_percent, args.translate_percent),
-                rotate=(-args.rotation_range, args.rotation_range),
-                shear=(-args.shear_percent, args.shear_percent),
-                p=1.0,
-            ),
-            A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=args.sharpen_p),
-            A.augmentations.crops.transforms.RandomResizedCrop(
-                args.input_width, args.input_height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
-            ),
-            A.OneOf(
-                [
-                    A.augmentations.transforms.CLAHE(p=args.clae_p, clip_limit=3),
-                    A.augmentations.transforms.RandomGamma(
-                        (100 - args.contrast_gamma, 100 + args.contrast_gamma),
-                        p=0.5,
-                    ),
-                ],
-                p=1,
-            ),
-            ToTensorV2(),
-        ],
-        p=1,
-    )
+    def __init__(
+        self,
+        annotation_df: str = "data-management/annotation.csv",
+        split_path: str = "",
+        split_column: str = None,
+        split_name: str = "test",
+        img_dir: str = "../data/annotated/",
+        mask_dirs: str = ["../data/masks/tensormask"],
+        data_augmentation: object = None,
+        norm_method: str = "zscore",
+        mask_crop_size: float = -1,
+        input_size: List[int] = [1, 512, 512],
+        y_col: str = "disorder",
+        fourier: str = "",
+        **kwargs,
+    ):
+        """
+        simple loader for inference tasks (disorder or bone age prediction)
 
+        :param annotation_df: path to csv file containing the image paths and the sex
+        :param split_df: split containing the subset used for inference
+        :param split_column: column containing the split. If None or False, all images are used
+        :param split_name: name of the split. If split_column is specified only entries that are equal to this column are used.
+        :param img_dir: path to root dir containing all images
+        :param mask_dirs: path to root dirs containing the masks
+        :param data_augmentation: data_augmentation to apply
+        :param norm_method: method to normalize the image
+        :param y_col: column containing gt to predict
+        """
+        self.mask_dir = mask_dirs
+        self.img_dir = img_dir
+        self.norm_method = norm_method
+        self.mask_crop_size = mask_crop_size
+        self.y_col = y_col
+        self.fourier = fourier
+        self.anno_df = (
+            pd.read_csv(annotation_df)
+            if isinstance(annotation_df, str)
+            else annotation_df
+        ).copy()
+        if split_path and split_column:
+            split_df = (
+                pd.read_csv(split_path) if isinstance(split_path, str) else split_path
+            )
+            assert (
+                split_column in split_df.columns
+            ), f"defined split columns ({split_column}) not found in the specified csv file"
+            self.anno_df = self.anno_df.merge(
+                split_df[["patient_ID", "dir", split_column]],
+                on=["patient_ID", "dir"],
+                how="inner",
+            )
+            self.anno_df = self.anno_df.loc[self.anno_df[split_column] == split_name]
 
-def main():
-    from matplotlib import pyplot as plt
+        self.data_augmentation = (
+            data_augmentation
+            if data_augmentation
+            else HandDatamodule.get_inference_augmentation(input_size[1], input_size[2])
+        )
+        self.use_cache = False
+        self._remove_if_mask_missing()
 
-    train_augment = A.Compose(
-        [
-            A.transforms.HorizontalFlip(p=0.5),
-            A.augmentations.geometric.transforms.Affine(
-                scale=(1 - 0.2, 1 / (1 - 0.2)),
-                translate_percent=(-0.2, 0.2),
-                rotate=(-25, 25),
-                shear=(-5, 5),
-                p=1.0,
-            ),
-            A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=0.2),
-            A.augmentations.crops.transforms.RandomResizedCrop(
-                512, 512, scale=(1.0, 1.0), ratio=(1.0, 1.0)
-            ),
-            A.OneOf(
-                [
-                    A.augmentations.transforms.RandomGamma((80, 120), p=1),
-                    A.augmentations.transforms.CLAHE(p=1, clip_limit=3),
-                ],
-                p=1,
-            ),
-            ToTensorV2(),
-        ],
-        p=1,
-    )
-    # train_augment = RsnaBoneAgeDataModule.get_inference_augmentation()
-    data_dir = "../data/annotated/rsna_bone_age/"
-    train = RsnaBoneAgeKaggle(
-        os.path.join(data_dir, "annotation_bone_age_training_data_set.csv"),
-        os.path.join(data_dir, "bone_age_training_data_set"),
-        data_augmentation=train_augment,
-        bone_age_normalization=None,  # calculate renorm based on training set
-        mask_dir=[
-            "../data/masks/rsna_bone_age/tensormask",
-            "../data/masks/rsna_bone_age/unet",
-        ],
-        crop_to_mask=False,
-        norm_method="zscore",
-        cache=False,
-    )
-    from time import time
+        self.anno_df["male"] = np.where(self.anno_df["sex"] == "M", 1, 0).astype(float)
 
-    start = time()
-    for i in range(20):
-        batch = train[5]
-        img = batch["x"].numpy().squeeze()
-        plt.imshow(img, cmap="gray")
-        plt.show()
-    print(time() - start)
+    def __getitem__(self, index):
+        if torch.is_tensor(index):
+            index = index.tolist()
 
+        image, image_path = self._preprocess_image(index)
+        male = torch.Tensor([self.anno_df.male.iloc[index]])
 
-if __name__ == "__main__":
-    main()
+        sample = {
+            "x": image,
+            "male": male,
+            "image_name": image_path,
+        }
+        if self.y_col:
+            sample = sample | {
+                "y": torch.Tensor([self.anno_df[self.y_col].iloc[index]])
+            }
+        return sample
