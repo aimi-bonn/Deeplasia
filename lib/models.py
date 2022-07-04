@@ -44,7 +44,7 @@ class MultiTaskLoss(nn.Module):
         if self.learnable:
             total_loss = self._uncert_sum(age_loss, sex_loss)
         else:
-            total_loss = self.age_sigma * age_loss + sex_loss * sex_loss
+            total_loss = self.age_sigma * age_loss + self.sex_sigma * sex_loss
         return total_loss, age_loss.detach(), sex_loss.detach()
 
     def _uncert_sum(self, age_loss, sex_loss):
@@ -73,7 +73,7 @@ class BoneAgeModel(pl.LightningModule):
         self,
         backbone: Union[str, bool] = "efficientnet-b0",
         pretrained: Union[bool, str] = None,
-        dense_layers: List[int] = [1024, 1024, 512, 512],
+        dense_layers: List[int] = [256],
         sex_dcs: int = 32,
         explicit_sex_classifier: List[int] = None,
         correct_predicted_sex: bool = False,
@@ -92,6 +92,8 @@ class BoneAgeModel(pl.LightningModule):
         **kwargs,
     ):
         super(BoneAgeModel, self).__init__()
+        if correct_predicted_sex and not explicit_sex_classifier and sex_sigma:
+            logger.warning("the configuration will predict sex which is also an input!")
 
         self.start_time = -1
         self.save_hyperparameters(ignore=["age_mean", "age_std"])
@@ -99,9 +101,7 @@ class BoneAgeModel(pl.LightningModule):
 
         self.sex_sigma = sex_sigma
         self.age_sigma = age_sigma
-        self.learnable_sigma = learnable_sigma
-
-        self.slope, self.bias = (1, 0)
+        self.slope, self.bias = (0, 0)
 
         self.example_input_array = self.get_example_input(input_size, batch_size)
         self._build_model(
@@ -115,7 +115,6 @@ class BoneAgeModel(pl.LightningModule):
             dropout_p=dropout_p,
         )
         self.loss = MultiTaskLoss(age_sigma, sex_sigma, learnable_sigma)
-
         self._create_metrics()
 
     def _build_model(
@@ -178,6 +177,8 @@ class BoneAgeModel(pl.LightningModule):
         self.age_metrics = {
             "train": age_metrics.clone(prefix="train_"),
             "val": age_metrics.clone(prefix="val_"),
+            "train_reg": age_metrics.clone(prefix="train_reg_"),
+            "val_reg": age_metrics.clone(prefix="val_reg_"),
         }
 
     def on_save_checkpoint(self, checkpoint):
@@ -227,6 +228,10 @@ class BoneAgeModel(pl.LightningModule):
                 for k, v in self.sex_metrics["train"].compute().items()
             }
             | {
+                f"Metrics_Age_Reg/{k}": v
+                for k, v in self.age_metrics["train_reg"].compute().items()
+            }
+            | {
                 "Pred_bias/intercept_train": bias,
                 "Pred_bias/slope_train": slope,
                 "Loss/sex_sigma": self.sex_sigma,
@@ -234,8 +239,9 @@ class BoneAgeModel(pl.LightningModule):
             }
         )
         self.logger.log_metrics(log_dict, step=self.current_epoch)
-        self.age_metrics["val"].reset()
-        self.sex_metrics["val"].reset()
+        self.age_metrics["train"].reset()
+        self.age_metrics["train_reg"].reset()
+        self.sex_metrics["train"].reset()
         self.logger.experiment.add_scalars(
             "Metrics_Age/MAD_months",
             {"train": log_dict["Metrics_Age/train_RescaledMAE"]},
@@ -247,12 +253,16 @@ class BoneAgeModel(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         self._regression_plot(outputs, "Validation Error")
-        if self.global_step:
+        if self.current_epoch > 5:
             self.slope, self.bias = self.calculate_prediction_bias(outputs)
         log_dict = (
             {
                 f"Metrics_Age/{k}": v
                 for k, v in self.age_metrics["val"].compute().items()
+            }
+            | {
+                f"Metrics_Age_Reg/{k}": v
+                for k, v in self.age_metrics["val_reg"].compute().items()
             }
             | {
                 f"Metrics_Sex/{k}": v
@@ -267,8 +277,12 @@ class BoneAgeModel(pl.LightningModule):
             global_step=self.current_epoch,
         )
         self.age_metrics["val"].reset()
+        self.age_metrics["val_reg"].reset()
         self.sex_metrics["val"].reset()
         self.log("Step-wise/val_mad", log_dict["Metrics_Age/val_RescaledMAE"])
+        self.log(
+            "Step-wise/val_reg_mad", log_dict["Metrics_Age_Reg/val_reg_RescaledMAE"]
+        )
         self.log("Step-wise/val_ROC", log_dict["Metrics_Sex/val_AUROC"])
 
     def _regression_plot(self, outputs, title):
@@ -298,7 +312,8 @@ class BoneAgeModel(pl.LightningModule):
         loss, age_loss, sex_loss = self.loss(age_hat, age, sex_hat, male)
 
         age_hat_cor = self.cor_prediction_bias(age_hat)
-        self.age_metrics[step_type].to(age_hat.device)(age_hat_cor, age)
+        self.age_metrics[step_type].to(age_hat.device)(age_hat, age)
+        self.age_metrics[step_type + "_reg"].to(age_hat.device)(age_hat_cor, age)
         self.sex_metrics[step_type].to(sex_hat.device)(sex_hat, male.to(int))
 
         return {
@@ -335,7 +350,7 @@ class BoneAgeModel(pl.LightningModule):
         try:
             slope, intercept, _, _, _ = scipy.stats.linregress(y_hats, y_hats - ys)
         except:
-            slope, intercept = (1, 0)
+            slope, intercept = (0, 0)
         return slope, intercept
 
     @staticmethod
@@ -487,14 +502,14 @@ class DenseNetwork(nn.Module):
                 )
             self.fc_sex = nn.Linear(channel_sizes_in[-1], 1)
 
-    def forward(self, features, male=-1):
+    def forward(self, features, male):
         if self.explicit_sex_classifier is not None:
             sex_hat = features
             for layer in self.explicit_sex_classifier:
                 sex_hat = self.act(self.dropout(layer(sex_hat)))
             sex_hat = self.fc_sex(sex_hat)
             male = (
-                male if self.correct_sex and male >= 0 else sex_hat.detach()
+                male if self.correct_sex and male is not None else sex_hat.detach()
             )  # detach because we want to have male as constant
 
         male = self.act(self.fc_gender_in(male))
@@ -504,6 +519,6 @@ class DenseNetwork(nn.Module):
             x = self.act(self.dropout(layer(x)))
         age_hat = self.fc_boneage(x)
 
-        if self.explicit_sex_classifier is None:
+        if not self.explicit_sex_classifier:
             sex_hat = self.fc_sex(x)
         return age_hat, sex_hat

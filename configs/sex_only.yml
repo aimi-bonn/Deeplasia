@@ -4,3 +4,24 @@ model:
   correct_predicted_sex: False
   age_sigma: 0
   sex_sigma: 1
+lr_scheduler:
+  class_path: pytorch_lightning.utilities.cli.ReduceLROnPlateau
+  init_args:
+    monitor: Step-wise/val_ROC
+    mode: min
+    factor: 0.1
+    patience: 10
+    min_lr: 1e-5
+    cooldown: 5
+    verbose: True
+early_stopping:
+  monitor: Step-wise/val_ROC  # Also used for model checkpointing
+  min_delta: 0.0
+  patience: 50
+  verbose: true
+  mode: min
+  strict: true
+  check_finite: true
+  stopping_threshold: null
+  divergence_threshold: null
+  check_on_train_epoch_end: null

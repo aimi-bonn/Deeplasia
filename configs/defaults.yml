@@ -10,6 +10,9 @@ trainer:
   enable_checkpointing: False
   enable_model_summary: False
   log_gpu_memory: null
+#data:
+#  train_batch_size: 32
+#  test_batch_size: 52
 optimizer:
   class_path: torch.optim.Adam
   init_args:
@@ -18,15 +21,15 @@ optimizer:
 lr_scheduler:
   class_path: pytorch_lightning.utilities.cli.ReduceLROnPlateau
   init_args:
-    monitor: Step-wise/val_mad
+    monitor: Step-wise/val_reg_mad
     mode: min
-    factor: 0.1
+    factor: 0.2
     patience: 10
-    min_lr: 1e-5
+    min_lr: 1e-4
     cooldown: 5
     verbose: True
 early_stopping:
-  monitor: Step-wise/val_mad  # Also used for model checkpointing
+  monitor: Step-wise/val_reg_mad  # Also used for model checkpointing
   min_delta: 0.0
   patience: 50
   verbose: true

@@ -53,6 +53,10 @@ def evaluate_bone_age_model(ckp_path, args, output_dir, trainer) -> dict:
     def mad(df, yhat_key="y_hat"):
         return la.norm(df["y"] - df[yhat_key], 1) / len(df)
 
+    def male_acc(df, yhat_key="male_hat"):
+        n_right = np.sum((df[yhat_key] > 0.5) == df["male"])
+        return n_right / len(df)
+
     for name, df in results.items():
         logger.info(
             f"{name} mad (without TTA and regression): {mad(df, 'y_hat-rot=0-no_flip')}"
@@ -94,6 +98,9 @@ def evaluate_bone_age_model(ckp_path, args, output_dir, trainer) -> dict:
             )
         for name in ["validation", "test"]:
             log_dict[f"hp/{name}_mad_reg_tta"] = mad(results[name], "y_hat_reg_tta")
+
+    for name, df in results.items():
+        logger.info(f"{name} sex accuracy (potentially TTA): {male_acc(df,'male_hat')}")
 
     if output_dir:
         output_dir = os.path.join(output_dir, "predictions")
@@ -148,6 +155,9 @@ def predict(
         df["y_hat"] = df[
             df.columns[df.columns.to_series().str.contains("y_hat")]
         ].apply(np.mean, axis=1)
+        df["male_hat"] = df[
+            df.columns[df.columns.to_series().str.contains("male_hat")]
+        ].apply(np.mean, axis=1)
         return df
 
     train_df, val_df, test_df = vote(train_df), vote(val_df), vote(test_df)
@@ -161,8 +171,8 @@ def predict_bone_age(
     columns = ["filename", "male", "y"]
     flips = ["no_flip", "flip"] if flip_img else ["no_flip"]
 
-    def make_df(pred, yhat_name):
-        colnames = ["filename", "male", "y", yhat_name]
+    def make_df(pred, yhat_name, male_hat_name):
+        colnames = ["filename", "male", "y", yhat_name, male_hat_name]
         d = {name: arr for name, arr in zip(colnames, pred)}
         df = pd.DataFrame(d)
         if np.any(np.isnan(df[yhat_name])):
@@ -202,7 +212,13 @@ def predict_bone_age(
                 mean=model.age_mean,
                 sd=model.age_std,
             )
-            l.append(make_df([*pred], f"y_hat-rot={rot_angle}-{flip}"))
+            l.append(
+                make_df(
+                    [*pred],
+                    f"y_hat-rot={rot_angle}-{flip}",
+                    f"male_hat-rot={rot_angle}-{flip}",
+                )
+            )
     return functools.reduce(lambda left, right: pd.merge(left, right, on=columns), l)
 
 
@@ -217,22 +233,21 @@ def predict_from_loader(model, data_loader, sd=1, mean=0, on_cpu=False):
     ys = []
     image_names = []
     males = []
+    male_hats = []
     with torch.set_grad_enabled(False):
         for batch in data_loader:
-            y_hat = (
-                model(batch["x"].to(device_loc), batch["male"].to(device_loc))[0]
-                .cpu()
-                .squeeze(dim=1)
-            )
-            y_hats.append(y_hat)
+            pred = model(batch["x"].to(device_loc), batch["male"].to(device_loc))
+            y_hats.append(pred[0].cpu().squeeze(dim=1))
+            male_hats.append(pred[1].cpu().squeeze(dim=1))
             ys.append(batch["y"].squeeze(dim=1))
             image_names.append(batch["image_name"])
             males.append(batch["male"])
     ys = torch.cat(ys).numpy()
     y_hats = torch.cat(y_hats).numpy() * sd + mean
+    male_hats = torch.sigmoid(torch.cat(male_hats)).numpy()
     image_names = np.array([name for batch in image_names for name in batch])
     males = np.array([male.item() for batch in males for male in batch])
-    return image_names, males, ys, y_hats
+    return image_names, males, ys, y_hats, male_hats
 
 
 def save_correlation_plot(

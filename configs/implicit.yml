@@ -1,6 +1,6 @@
 model:
-  explicit_sex_classifier: []
-  n_sex_dcs: 0
+  explicit_sex_classifier: null
+  sex_dcs: 0
   correct_predicted_sex: False
   age_sigma: 1
   sex_sigma: 1

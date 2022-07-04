@@ -126,6 +126,7 @@ class HandDataset(Dataset):
         if self.mask_dir:
             mask = self._open_mask(index)
             image = self._apply_mask(image, mask)
+            image = cv2.bitwise_and(image, image, mask=mask)  # mask the hand
             image = self._crop_to_mask(image, mask)
         image = self.data_augmentation(image=image)["image"]
         image = self._normalize_image(image)
@@ -270,12 +271,12 @@ class HandDatamodule(pl.LightningDataModule):
         split_column: str = "org_split",
         img_dir: str = "../data/annotated/",
         mask_dirs: List[str] = ["../data/masks/tensormask", "../data/masks/unet"],
-        train_batch_size: int = 16,
+        train_batch_size: int = 24,
         test_batch_size: int = 32,
         num_workers: int = 8,
         input_size: List[int] = [1, 512, 512],
         norm_method: str = "zscore",
-        mask_crop_size: float = 1.15,
+        mask_crop_size: float = -1,
         use_cache: bool = False,
         rotation_range: int = 30,
         translate_perc: float = 0.2,
@@ -285,7 +286,7 @@ class HandDatamodule(pl.LightningDataModule):
         shear_angle: float = 10,
         contrast_gamma: int = 30,
         sharpen_p=0.2,
-        clae_p=0.5,
+        clae_p=1,
     ):
         """
         Datamodule representing train, val, and test set of the bone disorder data
@@ -456,7 +457,7 @@ class HandDatamodule(pl.LightningDataModule):
         shear_percent=10.0,
         contrast_gamma=30.0,
         sharpen_p=0.2,
-        clae_p=0.5,
+        clae_p=1,
     ):
         return A.Compose(
             [

@@ -1,0 +1,6 @@
+lr_scheduler:
+  class_path: pytorch_lightning.utilities.cli.CosineAnnealingWarmRestarts
+  init_args:
+    T_0: 10
+    eta_min: 5e-5
+
