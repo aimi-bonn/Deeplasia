@@ -67,6 +67,7 @@ output/
 
 # tmp files
 nb/playground/
+nb/paper/
 
 
 ## run log file

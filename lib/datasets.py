@@ -285,8 +285,8 @@ class HandDatamodule(pl.LightningDataModule):
         zoom_out: float = 0.2,
         shear_angle: float = 10,
         contrast_gamma: int = 30,
-        sharpen_p=0.2,
-        clae_p=1,
+        sharpen_p: float = 0.2,
+        clae_p: float = 1,
     ):
         """
         Datamodule representing train, val, and test set of the bone disorder data

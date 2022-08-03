@@ -1,0 +1,6 @@
+data:
+  rotation_range: 30
+  shear_angle: 5
+  contrast_gamma: 0
+  sharpen_p : 0.0
+  clae_p: 0.0

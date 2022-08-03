@@ -4,4 +4,4 @@ model:
   sex_dcs: 32
   correct_predicted_sex: True
   age_sigma: 1
-  sex_sigma: 1
+  sex_sigma: 0
