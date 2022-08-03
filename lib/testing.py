@@ -17,7 +17,7 @@ import pandas as pd
 import functools
 from torch.utils.data import DataLoader
 
-from lib import datasets, models, constants
+from lib import datasets
 
 
 def add_eval_args(parent_parser):

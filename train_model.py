@@ -8,7 +8,7 @@ import sys
 
 sys.path.append("..")
 
-from lib import constants, utils, testing
+from lib import testing
 from lib.models import *
 from lib.datasets import *
 
