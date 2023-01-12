@@ -5,14 +5,14 @@
 
 This repo contains the code for the paper <TODO: add link to paper>.
 
-The models are trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age). 
+The models were trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age). 
 The dataset contains ca. 14,200 images of the hand and wrist of children, with ages ranging from 0 to 18 years.
 
 The models consist of a convolutional backbone (*efficientnet* or *inception-v3*) and a fully connected classifier performing the regression of the bone age.
 
-<img src="figs/Bone_age_model_sketch.png" width="1000" height="400" />
+<img src="figs/Bone_age_model_sketch.png" width="1000" height="450" />
 
-Usually the model takes the sex as additional input, however it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
+Usually the model takes the sex as additional input. However it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
 
 ## Installation
 
@@ -31,24 +31,24 @@ Please refer to the official [PyTorch installation guide](https://pytorch.org/ge
 
 ## Data
 
-The [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age) and the [Los Angeles Digital Hand Atalas](https://ipilab.usc.edu/research/baaweb/) are publicly available for training and testing.
+The [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age) and the [Los Angeles Digital Hand Atlas](https://ipilab.usc.edu/research/baaweb/) are publicly available for training and testing.
 
 ### Annotation formatting
 
-To assert compatibility with varying data sources, the original annotations of the RSNA dataset are converted to common `.csv` file containing the annotations from all subsets.
+To assert compatibility with varying data sources the original annotations of the RSNA dataset are converted to common `.csv` file containing the annotations from all subsets.
 An example of the annotations file containing the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age) and the [Los Angeles Digital Hand Atalas](https://ipilab.usc.edu/research/baaweb/) (DHA)  can be found in `data/annotations.csv`.
 
 The hand masks are available from [zenodo](https://doi.org/10.5281/zenodo.7415591).
 
 ### Splits
 
-To define the splits of the data, the `data/splits` folder contains `.csv` files.
-Hereby, the patient IDs are matched to the corresponding patients in the annotations file.
-So far files for the original RSNA competition on kaggle and the DHA as test only set is available.
+The `data/splits` folder contains `.csv` files defining the splits of the corresponding data sets.
+Hereby, the patient IDs match the splits to the corresponding patients in the annotations file.
+So far, files for the original RSNA competition on kaggle and the DHA as test set is available.
 
 ## Inference
 
-For batched prediction use the `predict.py` script. E.g. to test a model on the DHA, run:
+For batched predictions, use the `predict.py` script; e.g. to test a model on the DHA, run:
 
 ```bash
 $ python predict.py \
@@ -60,7 +60,7 @@ $ python predict.py \
     --split_name="test" \
     --mask_crop_size=1.15 \
     --num_workers=8 \
-    --[...]
+    [...]
 ````
 
 See also the [streamlit app](https://github.com/igsb/bone-age-streamlit) for interactive inference.
@@ -83,7 +83,7 @@ $ python train_model.py \
 
 ### Logging
 
-Per default, logs are saved to `run.log`. 
+Per default, logs are written to `run.log`. 
 To specify a different path, run the script with the `$LOG_FILE` environment variable:
 
 ``` bash
@@ -92,14 +92,14 @@ $ LOG_FILE=<path/to/log_file.txt> python train_model.py [...]
 
 ### Flags and options
 
-For all option check the `lib/datasets.py` and `lib/models.py` files or type 
+For all options, check the `lib/datasets.py` and `lib/models.py` files or type 
 
 ```bash
 $ python train_model.py -h
 ```
 
 to obtain an overview of all flags and options. 
-Note, that for bundling jointly used options (e.g. for training on a certain device) it is possible to create a special config and add it as `--config=/path/to/config.yml` flag.
+Note that for bundling jointly used options (e.g. for training on a certain device) it is possible to create a special config and add it as `--config=/path/to/config.yml` flag.
 
 For general training options (i.e. everything except the model and data options) check the *pytorch-lightning* [documentation](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html).
 
@@ -107,7 +107,7 @@ For general training options (i.e. everything except the model and data options)
 
 The following configurations are available:
  * Use the sex as input (`configs/sex_input.yml`, as the default configuration)
- * Predict the sex explicitly (i.e. in separate classifier) in an MTL setting (`configs/explicit.yml`). Hereby,
+ * Predict the sex explicitly (i.e. in separate classifier) in an MTL setting (`configs/explicit.yml`). Hereby
    * either the predicted sex can be used for the age prediction (`--model.correct_predicted_sex=False`)
    * or the ground truth sex can be used for age prediction during training (`--model.correct_predicted_sex=True`, default) 
  * Aim to predict the sex implicitly (i.e. without a separate classifier) in an MTL setting (`configs/implicit.yml`)
