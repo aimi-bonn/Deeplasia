@@ -10,9 +10,6 @@ trainer:
   enable_checkpointing: False
   enable_model_summary: False
   log_gpu_memory: null
-#data:
-#  train_batch_size: 32
-#  test_batch_size: 52
 optimizer:
   class_path: torch.optim.Adam
   init_args:

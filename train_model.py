@@ -23,14 +23,17 @@ def main():
     )
     cli.setup_callbacks()
     cli.log_info()
-    cli.examples_to_tb()
+    try:
+        cli.examples_to_tb()
+        logger.info(f"{'=' * 10} start training {'=' * 10}")
+        cli.trainer.fit(cli.model, cli.datamodule)
+        cli.log_train_stats()
 
-    logger.info(f"{'=' * 10} start training {'=' * 10}")
-    cli.trainer.fit(cli.model, cli.datamodule)
-    cli.log_train_stats()
-
-    logger.info(f"{'=' * 10} Testing model {'=' * 10}")
-    test_ckp_path = cli.get_model_weights()
+        logger.info(f"{'=' * 10} Testing model {'=' * 10}")
+        test_ckp_path = cli.get_model_weights()
+    except Exception:
+        logger.exception("No training samples, testing only")
+        test_ckp_path = cli.config["trainer"]["resume_from_checkpoint"]
 
     log_dict = testing.evaluate_bone_age_model(
         test_ckp_path, cli.config, cli.trainer.logger.log_dir, cli.trainer

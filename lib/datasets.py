@@ -54,7 +54,6 @@ class HandDataset(Dataset):
     RELEVANT_ENTRIES = [
         "image_ID",
         "dir",
-        "chronological_age",
         "sex",
         "bone_age",
     ]
@@ -70,9 +69,7 @@ class HandDataset(Dataset):
         mask_crop_size=-1,
         use_cache=False,
         y_col="disorder",
-        fourier=False,
     ):
-        self.fourier = fourier
         self.mask_dir = mask_dirs
         self.img_dir = img_dir
         self.norm_method = norm_method
@@ -528,9 +525,9 @@ class InferenceDataset(HandDataset):
         norm_method: str = "zscore",
         mask_crop_size: float = -1,
         input_size: List[int] = [1, 512, 512],
-        y_col: str = "disorder",
-        fourier: str = "",
-        **kwargs,
+        y_col: str = "bone_age",
+        flip: bool = False,
+        rotation_angle: int = 0,
     ):
         """
         simple loader for inference tasks (disorder or bone age prediction)
@@ -550,7 +547,6 @@ class InferenceDataset(HandDataset):
         self.norm_method = norm_method
         self.mask_crop_size = mask_crop_size
         self.y_col = y_col
-        self.fourier = fourier
         self.anno_df = (
             pd.read_csv(annotation_df)
             if isinstance(annotation_df, str)
@@ -563,6 +559,8 @@ class InferenceDataset(HandDataset):
             assert (
                 split_column in split_df.columns
             ), f"defined split columns ({split_column}) not found in the specified csv file"
+            self.anno_df["patient_ID"] = self.anno_df["patient_ID"].astype(str)
+            split_df["patient_ID"] = split_df["patient_ID"].astype(str)
             self.anno_df = self.anno_df.merge(
                 split_df[["patient_ID", "dir", split_column]],
                 on=["patient_ID", "dir"],
@@ -573,7 +571,9 @@ class InferenceDataset(HandDataset):
         self.data_augmentation = (
             data_augmentation
             if data_augmentation
-            else HandDatamodule.get_inference_augmentation(input_size[1], input_size[2])
+            else HandDatamodule.get_inference_augmentation(
+                input_size[1], input_size[2], flip=flip, rotation_angle=rotation_angle
+            )
         )
         self.use_cache = False
         self._remove_if_mask_missing()

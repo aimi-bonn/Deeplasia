@@ -295,7 +295,18 @@ class BoneAgeModel(pl.LightningModule):
             )
 
     def predict_step(self, batch, batch_idx: int, dataloader_idx: int = None):
-        return self(batch["x"], batch["male"])
+        x = batch["x"]
+        male = batch["male"]
+        y_hat, male_hat = self.forward(x, male)
+        d = {
+            "sex": male,
+            "y_hat": y_hat,
+            "image_path": batch["image_name"],
+            "sex_hat": torch.nn.functional.softmax(male_hat, dim=-1),
+        }
+        if "y" in batch.keys():
+            d = {"y": batch["y"]} | d
+        return d
 
     def test_step(self, batch, batch_idx):
         x, male, y = batch.values()
