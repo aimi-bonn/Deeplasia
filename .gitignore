@@ -62,7 +62,8 @@ geckodriver.log
 data/
 
 ## output
-output/
+/output/
+/output
 !annotations.csv
 
 # tmp files
