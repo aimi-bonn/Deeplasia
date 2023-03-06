@@ -1,4 +1,4 @@
-# Bone Age Prediction using Deep Learning
+# Prior-free deep learning for pediatric bone age assessment robust to skeletal dysplasias
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 &nbsp; &nbsp; [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](http://creativecommons.org/licenses/by-nc/4.0/)
