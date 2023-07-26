@@ -1,11 +1,12 @@
-# Bone Age Prediction using Deep Learning
+# Deeplasia
+# Prior-free deep learning for pediatric bone age assessment robust to skeletal dysplasias
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 &nbsp; &nbsp; [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](http://creativecommons.org/licenses/by-nc/4.0/)
 
 This repo contains the code for the paper <TODO: add link to paper>.
 
-The models were trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age). 
+The models were trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age).
 The dataset contains ca. 14,200 images of the hand and wrist of children, with ages ranging from 0 to 18 years.
 
 The models consist of a convolutional backbone (*efficientnet* or *inception-v3*) and a fully connected classifier performing the regression of the bone age.
@@ -85,7 +86,7 @@ $ python train_model.py \
 
 ### Logging
 
-Per default, logs are written to `run.log`. 
+Per default, logs are written to `run.log`.
 To specify a different path, run the script with the `$LOG_FILE` environment variable:
 
 ``` bash
@@ -94,13 +95,13 @@ $ LOG_FILE=<path/to/log_file.txt> python train_model.py [...]
 
 ### Flags and options
 
-For all options, check the `lib/datasets.py` and `lib/models.py` files or type 
+For all options, check the `lib/datasets.py` and `lib/models.py` files or type
 
 ```bash
 $ python train_model.py -h
 ```
 
-to obtain an overview of all flags and options. 
+to obtain an overview of all flags and options.
 Note that for bundling jointly used options (e.g. for training on a certain device) it is possible to create a special config and add it as `--config=/path/to/config.yml` flag.
 
 For general training options (i.e. everything except the model and data options) check the *pytorch-lightning* [documentation](https://pytorch-lightning.readthedocs.io/en/latest/common/trainer.html).
@@ -111,7 +112,7 @@ The following configurations are available:
  * Use the sex as input (`configs/sex_input.yml`, as the default configuration)
  * Predict the sex explicitly (i.e. in separate classifier) in an MTL setting (`configs/explicit.yml`). Hereby
    * either the predicted sex can be used for the age prediction (`--model.correct_predicted_sex=False`)
-   * or the ground truth sex can be used for age prediction during training (`--model.correct_predicted_sex=True`, default) 
+   * or the ground truth sex can be used for age prediction during training (`--model.correct_predicted_sex=True`, default)
  * Aim to predict the sex implicitly (i.e. without a separate classifier) in an MTL setting (`configs/implicit.yml`)
  * Predict only the sex and ignore the bone age (`configs/sex_only.yml`)
 
@@ -120,4 +121,4 @@ A template for a SLURM training job is available at `bash/slurm_job_example.sh`.
 
 
 # Citation
-tba
+Rassmann et al. 2023
