@@ -48,7 +48,6 @@ class ImageCache:
 
 
 class HandDataset(Dataset):
-
     CACHE = ImageCache()
 
     RELEVANT_ENTRIES = [
@@ -319,7 +318,9 @@ class HandDatamodule(pl.LightningDataModule):
         self.test_batch_size = test_batch_size
 
         train, val, test = self._handle_data_splits(
-            annotation_path, split_path, split_column,
+            annotation_path,
+            split_path,
+            split_column,
         )
         self.img_dir = img_dir
         self.mask_dirs = mask_dirs
@@ -420,7 +421,10 @@ class HandDatamodule(pl.LightningDataModule):
         }
 
     def _handle_data_splits(
-        self, annotation_path, split_path, split_column,
+        self,
+        annotation_path,
+        split_path,
+        split_column,
     ):
         df = pd.read_csv(annotation_path)
         split = pd.read_csv(split_path)
@@ -472,13 +476,17 @@ class HandDatamodule(pl.LightningDataModule):
                 ),
                 A.Sharpen(alpha=(0.5, 0.75), lightness=(0.5, 1.0), p=sharpen_p),
                 A.RandomResizedCrop(
-                    input_size[1], input_size[2], scale=(1.0, 1.0), ratio=(1.0, 1.0),
+                    input_size[1],
+                    input_size[2],
+                    scale=(1.0, 1.0),
+                    ratio=(1.0, 1.0),
                 ),
                 A.OneOf(
                     [
                         A.augmentations.transforms.CLAHE(p=clae_p, clip_limit=3),
                         A.augmentations.transforms.RandomGamma(
-                            (100 - contrast_gamma, 100 + contrast_gamma), p=0.5,
+                            (100 - contrast_gamma, 100 + contrast_gamma),
+                            p=0.5,
                         ),
                     ],
                     p=1,
@@ -492,13 +500,12 @@ class HandDatamodule(pl.LightningDataModule):
     def get_inference_augmentation(width=512, height=512, rotation_angle=0, flip=False):
         return A.Compose(
             [
-                A.transforms.HorizontalFlip(p=flip),
-                A.augmentations.geometric.transforms.Affine(
-                    rotate=(rotation_angle, rotation_angle), p=1.0,
+                A.HorizontalFlip(p=flip),
+                A.Affine(
+                    rotate=(rotation_angle, rotation_angle),
+                    p=1.0,
                 ),
-                A.augmentations.crops.transforms.RandomResizedCrop(
-                    width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)
-                ),
+                A.RandomResizedCrop(width, height, scale=(1.0, 1.0), ratio=(1.0, 1.0)),
                 ToTensorV2(),
             ],
             p=1,
@@ -506,7 +513,6 @@ class HandDatamodule(pl.LightningDataModule):
 
 
 class InferenceDataset(HandDataset):
-
     RELEVANT_ENTRIES = [
         "image_ID",
         "dir",
@@ -516,7 +522,7 @@ class InferenceDataset(HandDataset):
     def __init__(
         self,
         annotation_df: str = "data-management/annotation.csv",
-        split_path: str = "",
+        split_df: str = "",
         split_column: str = None,
         split_name: str = "test",
         img_dir: str = "../data/annotated/",
@@ -525,9 +531,12 @@ class InferenceDataset(HandDataset):
         norm_method: str = "zscore",
         mask_crop_size: float = -1,
         input_size: List[int] = [1, 512, 512],
-        y_col: str = "bone_age",
+        y_col: str = "disorder",
+        source_col="image_source",
+        fourier: str = "",
         flip: bool = False,
-        rotation_angle: int = 0,
+        rotation_angle: float = 0,
+        number_intensity_bins: int = -1,
     ):
         """
         simple loader for inference tasks (disorder or bone age prediction)
@@ -541,26 +550,50 @@ class InferenceDataset(HandDataset):
         :param data_augmentation: data_augmentation to apply
         :param norm_method: method to normalize the image
         :param y_col: column containing gt to predict
+        :param source_col: column containing confounder
         """
         self.mask_dir = mask_dirs
         self.img_dir = img_dir
         self.norm_method = norm_method
         self.mask_crop_size = mask_crop_size
         self.y_col = y_col
+        self.source_label = source_col
+        self.fourier = fourier
+        self.number_intensity_bins = (
+            number_intensity_bins
+            if isinstance(number_intensity_bins, tuple)
+            else (number_intensity_bins,)
+        )
         self.anno_df = (
             pd.read_csv(annotation_df)
             if isinstance(annotation_df, str)
             else annotation_df
         ).copy()
-        if split_path and split_column:
+
+        # drop non existing files
+        self.anno_df = self.anno_df.replace(np.nan, "", regex=True)
+        path = (
+            self.anno_df["dir"]
+            + np.where(self.anno_df["dir"], "/", "")
+            + self.anno_df["image_ID"]
+        )
+        drop = [os.path.exists(os.path.join(self.img_dir, p)) for p in path]
+        if sum(drop) != len(drop):
+            logger.warning(
+                f"dropping {len(drop) - sum(drop)} entries because the corresponding images could not be found"
+            )
+            self.anno_df = self.anno_df.loc[drop]
+            logger.info(f"remaining entries: {len(self.anno_df)}")
+
+        if split_df and split_column:
             split_df = (
-                pd.read_csv(split_path) if isinstance(split_path, str) else split_path
+                pd.read_csv(split_df, dtype={"patient_ID": str})
+                if isinstance(split_df, str)
+                else split_df
             )
             assert (
                 split_column in split_df.columns
             ), f"defined split columns ({split_column}) not found in the specified csv file"
-            self.anno_df["patient_ID"] = self.anno_df["patient_ID"].astype(str)
-            split_df["patient_ID"] = split_df["patient_ID"].astype(str)
             self.anno_df = self.anno_df.merge(
                 split_df[["patient_ID", "dir", split_column]],
                 on=["patient_ID", "dir"],
@@ -572,13 +605,150 @@ class InferenceDataset(HandDataset):
             data_augmentation
             if data_augmentation
             else HandDatamodule.get_inference_augmentation(
-                input_size[1], input_size[2], flip=flip, rotation_angle=rotation_angle
+                input_size[1],
+                input_size[2],
+                flip=flip,
+                rotation_angle=rotation_angle,
             )
         )
         self.use_cache = False
         self._remove_if_mask_missing()
+        self.noise_augmentation = None
 
         self.anno_df["male"] = np.where(self.anno_df["sex"] == "M", 1, 0).astype(float)
+
+    def _preprocess_image(self, index, source_label=None):
+        cv_imread_flag = (
+            cv2.IMREAD_GRAYSCALE
+            if max(self.number_intensity_bins) <= 256
+            and min(self.number_intensity_bins) > 0
+            else cv2.IMREAD_ANYDEPTH
+        )
+        image, image_path = self._open_image(index, cv_imread_flag)
+
+        if self.mask_dir:
+            mask = self._open_mask(index)
+            assert (
+                mask.shape == image.shape
+            ), f"error on image {image_path}, shape of image ({image.shape}) and mask ({mask.shape}) missmatch"
+            image, mask = self._apply_noising_aug(image, mask, source_label)
+            image = self._apply_mask(image, mask)
+        else:
+            image, _ = self._apply_noising_aug(image, None, source_label)
+        if self.norm_method == "equalize":
+            image = self._image_histogram_equalization(image)
+        if image.dtype != np.uint8:
+            image = image.astype(np.float32)
+        image = self.data_augmentation(image=image)["image"]
+        image = self._normalize_image(image)
+        image = self._fournier(image) if self.fourier else image
+        if torch.isnan(image).any():
+            logger.warning(f"Created nan: {image_path}")
+        return image, image_path
+
+    def _apply_noising_aug(self, image, mask, source_label=None):
+        if self.source_label is not None and isinstance(self.noise_augmentation, dict):
+            noise_aug = self.noise_augmentation[int(source_label.item())]
+        else:
+            noise_aug = self.noise_augmentation
+
+        if noise_aug is not None:
+            if mask is not None:
+                # apply noising augmentation also to mask for consistent cropping
+                aug = noise_aug(image=image, mask=mask)
+                image = aug["image"]
+                mask = aug["mask"]
+            else:
+                image = noise_aug(image=image)["image"]
+        return image, mask
+
+    def _apply_mask(self, image, mask) -> np.ndarray:
+        """
+        apply image and subtract min intensity (1st percentile) from the masked area
+        """
+        image = image * mask  # mask the hand
+        m = np.percentile(image[image > 0], 1)
+        image = cv2.subtract(image, m)  # no underflow
+        image = self._crop_to_mask(image, mask)
+        return image
+
+    def _normalize_image(self, img: torch.Tensor) -> torch.Tensor:
+        img = img.to(torch.float32)
+        if self.norm_method == "zscore":
+            m = img.mean()
+            sd = img.std()
+            img = (img - m) / sd
+        elif self.norm_method == "interval":
+            img = img - img.min()
+            img = img / img.max()
+        return img
+
+    def _image_histogram_equalization(self, image: np.ndarray) -> np.ndarray:
+        if (
+            isinstance(self.number_intensity_bins, tuple)
+            or self.number_intensity_bins > 1
+        ):
+            number_bins = (
+                np.random.randint(*self.number_intensity_bins)
+                if len(self.number_intensity_bins) == 2
+                else self.number_intensity_bins[0]
+            )
+            image = image - image.min()
+            image = np.round(image / image.max() * number_bins).astype(np.uint16)
+        else:
+            number_bins = image.max() - image.min()  # not +1 because 0 is neglected
+        image_histogram, bins = np.histogram(
+            image[image > 0].flatten(), number_bins, density=True
+        )
+        cdf = np.cumsum(np.concatenate((np.zeros(1), image_histogram), axis=0))
+        image_equalized = cdf[image]
+        return image_equalized.reshape(image.shape)
+
+    def _fournier(self, image):
+        dft = cv2.dft(np.float32(image.squeeze().numpy()), flags=cv2.DFT_COMPLEX_OUTPUT)
+        dft_shift = np.fft.fftshift(dft)
+        mag = cv2.magnitude(dft_shift[:, :, 0], dft_shift[:, :, 1])
+        mag_c = np.clip(mag, -5, 5)
+        if self.fourier != "magn":
+            ph = np.clip(dft_shift, -5, 5)
+            tmp = np.stack([ph[:, :, 0], ph[:, :, 1], mag_c])
+        else:
+            tmp = np.stack([mag_c])
+        image = torch.Tensor(tmp)
+        return image
+
+    def _open_image(self, index: int, method=cv2.IMREAD_GRAYSCALE) -> (np.ndarray, str):
+        img_path = os.path.join(
+            self.img_dir,
+            self.anno_df["dir"].iloc[index],
+            self.anno_df["image_ID"].iloc[index],
+        )
+        image = cv2.imread(os.path.abspath(img_path), method)
+        if image is None:
+            logger.info(f"image {img_path} is None")
+        assert (
+            np.sum(image) != 0
+        ), f"image with index {index} is all black (sum is {np.sum(image)})"
+        assert (
+            np.std(image) > 1e-5
+        ), f"std of image with index {index} is close to zero ({np.std(image)})"
+        return image, img_path
+
+    def _open_mask(self, index: int) -> np.ndarray:
+        """
+        search for a corresponding mask
+        """
+        for d in np.random.permutation(self.mask_dir):
+            img_path = os.path.join(
+                d, self.anno_df["dir"].iloc[index], self.anno_df["image_ID"].iloc[index]
+            )
+            if os.path.exists(img_path):
+                break
+        mask = cv2.imread(os.path.abspath(img_path), cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            logger.info(f"mask {img_path} is None")
+        mask = (mask > mask.max() // 2).astype(np.uint8)
+        return mask
 
     def __getitem__(self, index):
         if torch.is_tensor(index):
@@ -592,8 +762,4 @@ class InferenceDataset(HandDataset):
             "male": male,
             "image_name": image_path,
         }
-        if self.y_col:
-            sample = sample | {
-                "y": torch.Tensor([self.anno_df[self.y_col].iloc[index]])
-            }
         return sample

@@ -56,10 +56,7 @@ geckodriver.log
 .vscode
 
 # CUSTOM
-.virtual_documents/ 
-
-## raw data
-data/
+.virtual_documents/
 
 ## output
 /output/

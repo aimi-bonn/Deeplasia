@@ -1,0 +1,32 @@
+age_mean: 127.31657409667969
+age_sd:  41.17934799194336
+
+masked_effnet-b4_pretr_fancy_aug:
+  slope: 0.1137
+  intercept: -15.2181
+masked_effnet-b4_shallow_pretr_fancy_aug:
+  slope: 0.1002
+  intercept: -12.4127
+masked_effnet-b4_supShal_pretr_fancy_aug:
+  slope: 0.0398
+  intercept: -4.8038
+
+masked_effnet_fancy_aug:
+  slope: 0.0360
+  intercept: -4.9679
+masked_effnet_shallow_fancy_aug:
+  slope: 0.0370
+  intercept: -3.9562
+masked_effnet_super_shallow_fancy_aug:
+  slope: 0.0375
+  intercept: -3.8066
+
+masked_effnet_highRes_fancy_aug:
+  slope: 0.0821
+  intercept: -10.4939
+masked_effnet_shallow_highRes_fancy_aug:
+  slope: 0.0763
+  intercept: -9.1184
+masked_effnet_supShal_highRes_fancy_aug:
+  slope: 0.0432
+  intercept: -4.7941
