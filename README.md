@@ -10,9 +10,9 @@ The dataset contains ca. 14,200 images of the hand and wrist of children, with a
 
 The models consist of a convolutional backbone (*efficientnet* or *inception-v3*) and a fully connected classifier performing the regression of the bone age.
 
-<img src="figs/Bone_age_model_sketch.png" width="1000" height="450" />
+<img src="figs/Bone_age_model_sketch.png" width=95%/>
 
-Usually the model takes the sex as additional input. However it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
+Usually the model takes the sex as additional input. However, it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
 
 ## Installation
 
@@ -63,7 +63,9 @@ $ python predict.py \
     [...]
 ````
 
-See also the [streamlit app](https://github.com/igsb/bone-age-streamlit) for interactive inference.
+For indepth instruction on how to test (including the final ensembling) see the example notebook [nb/example_inference.ipynb](nb/example_inference.ipynb).
+
+See also the [streamlit app](https://github.com/sRassmann/bone-age-streamlit) for interactive inference.
 
 ## Training
 
