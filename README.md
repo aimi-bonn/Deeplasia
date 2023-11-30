@@ -1,19 +1,20 @@
 # Deeplasia
-# Prior-free deep learning for pediatric bone age assessment robust to skeletal dysplasias
 
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 &nbsp; &nbsp; [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](http://creativecommons.org/licenses/by-nc/4.0/)
 
-This repo contains the code for the paper <TODO: add link to paper>.
+### [Deep learning for bone age assessment validated on skeletal dysplasias](https://doi.org/10.1007/s00247-023-05789-1)
+This repository contains the official code for [*Deeplasia*](deeplasia.de). We uses a simple, prior-free deep learning approach to assert generalizability to unseen and uncommon bone shapes.
 
 The models were trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age).
-The dataset contains ca. 14,200 images of the hand and wrist of children, with ages ranging from 0 to 18 years.
-
-The models consist of a convolutional backbone (*efficientnet* or *inception-v3*) and a fully connected classifier performing the regression of the bone age.
+The dataset contains ca. 14,200 images of the hands and wrists of children, with ages ranging from 0 to 18 years.
 
 <img src="figs/Bone_age_model_sketch.png" width=95%/>
 
-Usually the model takes the sex as additional input. However, it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
+The deep learning models consist of a convolutional backbone (*efficientnet* or *inception-v3*) and a fully connected classifier performing the regression of the bone age.
+Usually, the model takes the sex as additional input. However, it can also be trained to predict the sex in addition to the bone age as multi-task learning (MTL).
+
+# Usage
 
 ## Installation
 
@@ -36,7 +37,7 @@ The [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsn
 
 ### Annotation formatting
 
-To assert compatibility with varying data sources the original annotations of the RSNA dataset are converted to common `.csv` file containing the annotations from all subsets.
+To assert compatibility with varying data sources the original annotations of the RSNA dataset are converted to a common `.csv` file containing the annotations from all subsets.
 An example of the annotations file containing the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age) and the [Los Angeles Digital Hand Atalas](https://ipilab.usc.edu/research/baaweb/) (DHA)  can be found in `data/annotations.csv`.
 
 The hand masks are available from [zenodo](https://doi.org/10.5281/zenodo.7415591).
@@ -45,11 +46,12 @@ The hand masks are available from [zenodo](https://doi.org/10.5281/zenodo.741559
 
 The `data/splits` folder contains `.csv` files defining the splits of the corresponding data sets.
 Hereby, the patient IDs match the splits to the corresponding patients in the annotations file.
-So far, files for the original RSNA competition on kaggle and the DHA as test set is available.
+So far, files for the original RSNA competition on Kaggle and the DHA test set are available.
 
 ## Inference
 
-For batched predictions, use the `predict.py` script; e.g. to test a model on the DHA, run:
+### Batched inference
+For batched predictions, use the `predict.py` script; e.g. to test a model on the DHA with the [created annotation](data/annotation.csv), run:
 
 ```bash
 $ python predict.py \
@@ -63,10 +65,12 @@ $ python predict.py \
     --num_workers=8 \
     [...]
 ````
+For in-depth instruction on how to test (including the final ensembling) see the example notebook [nb/example_inference.ipynb](nb/example_inference.ipynb).
 
-For indepth instruction on how to test (including the final ensembling) see the example notebook [nb/example_inference.ipynb](nb/example_inference.ipynb).
+### Single image inference and deployment
 
-See also the [streamlit app](https://github.com/sRassmann/bone-age-streamlit) for interactive inference.
+See out [streamlit app](https://github.com/sRassmann/deeplasia-service/tree/streamlit) for easy local inference. 
+We also provide [a docker image containing *Deeplasia* and providing a RESTful API](https://github.com/srassmann/deeplasia-service/pkgs/container/deeplasia-service), see [deeplasia-service](https://github.com/sRassmann/deeplasia-service) for details.
 
 ## Training
 
@@ -110,7 +114,7 @@ For general training options (i.e. everything except the model and data options)
 
 The following configurations are available:
  * Use the sex as input (`configs/sex_input.yml`, as the default configuration)
- * Predict the sex explicitly (i.e. in separate classifier) in an MTL setting (`configs/explicit.yml`). Hereby
+ * Predict the sex explicitly (i.e. in a separate classifier) in an MTL setting (`configs/explicit.yml`). Hereby
    * either the predicted sex can be used for the age prediction (`--model.correct_predicted_sex=False`)
    * or the ground truth sex can be used for age prediction during training (`--model.correct_predicted_sex=True`, default)
  * Aim to predict the sex implicitly (i.e. without a separate classifier) in an MTL setting (`configs/implicit.yml`)
@@ -121,4 +125,13 @@ A template for a SLURM training job is available at `bash/slurm_job_example.sh`.
 
 
 # Citation
-Rassmann et al. 2023
+```
+@article{rassmann2023deeplasia,
+  title={Deeplasia: deep learning for bone age assessment validated on skeletal dysplasias},
+  author={Rassmann, Sebastian and Keller, Alexandra and Skaf, Kyra and Hustinx, Alexander and Gausche, Ruth and Ibarra-Arrelano, Miguel A and Hsieh, Tzung-Chien and Madajieu, Yolande ED and N{\"o}then, Markus M and Pf{\"a}ffle, Roland and others},
+  journal={Pediatric Radiology},
+  pages={1--14},
+  year={2023},
+  publisher={Springer}
+}
+```
