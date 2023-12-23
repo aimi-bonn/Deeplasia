@@ -4,7 +4,7 @@
 &nbsp; &nbsp; [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](http://creativecommons.org/licenses/by-nc/4.0/)
 
 ### [Deep learning for bone age assessment validated on skeletal dysplasias](https://doi.org/10.1007/s00247-023-05789-1)
-This repository contains the official code for [*Deeplasia*](deeplasia.de). We uses a simple, prior-free deep learning approach to assert generalizability to unseen and uncommon bone shapes.
+This repository contains the official code for [*Deeplasia*](deeplasia.de). We use a simple, prior-free deep learning approach to assert generalizability to unseen and uncommon bone shapes.
 
 The models were trained on the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age).
 The dataset contains ca. 14,200 images of the hands and wrists of children, with ages ranging from 0 to 18 years.
@@ -40,7 +40,7 @@ The [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsn
 To assert compatibility with varying data sources the original annotations of the RSNA dataset are converted to a common `.csv` file containing the annotations from all subsets.
 An example of the annotations file containing the [RSNA Pediatric Bone Age Dataset](https://www.kaggle.com/datasets/kmader/rsna-bone-age) and the [Los Angeles Digital Hand Atalas](https://ipilab.usc.edu/research/baaweb/) (DHA)  can be found in `data/annotations.csv`.
 
-The hand masks are available from [zenodo](https://doi.org/10.5281/zenodo.7415591).
+The hand masks are available from [zenodo](https://zenodo.org/records/7611677).
 
 ### Splits
 
